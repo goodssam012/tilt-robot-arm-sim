@@ -530,13 +530,11 @@ const samplePts = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()
 const _a = new THREE.Vector3(), _b = new THREE.Vector3();
 // 현재 관절 자세가 바닥/벽/다른 물건과 부딪히는지
 function poseInvalid() {
+  // 벽·받침대와의 충돌만 검사 (바닥은 floorDepth 에서 따로 검사)
   const tip = tipPoint.getWorldPosition(new THREE.Vector3());
-  if (tip.y < 0.02) return true;
-  // 팔 링크 위 샘플 점들
   shG.getWorldPosition(_a);
   elG.getWorldPosition(_b);
   const wrist = wrG.getWorldPosition(new THREE.Vector3());
-  if (_b.y < 0.1 || wrist.y < 0.1) return true;
   const pts = [];
   for (let i = 1; i <= 4; i++) pts.push(_a.clone().lerp(_b, i / 4));
   for (let i = 1; i <= 5; i++) pts.push(_b.clone().lerp(wrist, i / 5));
@@ -549,7 +547,6 @@ function poseInvalid() {
   if (state.held) {
     const h = state.held;
     objBox(h, _box);
-    if (_box.min.y < -0.005) return true;
     const corners = [];
     for (const x of [_box.min.x, _box.max.x]) for (const y of [_box.min.y, _box.max.y]) for (const z of [_box.min.z, _box.max.z]) corners.push(new THREE.Vector3(x, y, z));
     corners.push(_box.getCenter(new THREE.Vector3()));
@@ -570,6 +567,7 @@ function armSpheres() {
   const W = wrG.getWorldPosition(new THREE.Vector3());
   for (let i = 2; i <= 6; i++) list.push([S.clone().lerp(E, i / 6), 0.12]);   // 위팔
   for (let i = 1; i <= 6; i++) list.push([E.clone().lerp(W, i / 6), 0.1]);    // 아래팔
+  list.push([E, 0.17], [W, 0.12]);                                             // 팔꿈치·손목 관절
   list.push([wrG.localToWorld(new THREE.Vector3(0.16, 0, 0)), 0.07]);          // 손바닥 중심
   for (const f of fingers) {
     const c = Math.cos(f.angle), s = Math.sin(f.angle);
@@ -590,7 +588,7 @@ function objBlockedAt(o, np) {
 const vOverlap = (a, ay, b, by) => ay - a.hy < by + b.hy && ay + a.hy > by - b.hy;
 
 function resolveContacts(apply = true) {
-  const res = { contact: false, blocked: false, moved: false };
+  const res = { contact: false, blocked: false, moved: false, blockDepth: 0 };
   const pushes = new Map();
   const addPush = (o, x, z) => {
     const v = pushes.get(o);
@@ -609,7 +607,7 @@ function resolveContacts(apply = true) {
       if (depth <= 0) continue;
       res.contact = true;
       // 위에서 누르는 경우나 완료되어 고정된 물건은 밀리지 않음
-      if (o.locked || (s.y > top - 0.02 && d < o.rad)) { res.blocked = true; continue; }
+      if (o.locked || (s.y > top - 0.02 && d < o.rad)) { res.blocked = true; res.blockDepth += depth; continue; }
       addPush(o, d > 1e-6 ? (dx / d) * depth : depth, d > 1e-6 ? (dz / d) * depth : 0);
     }
   }
@@ -626,7 +624,7 @@ function resolveContacts(apply = true) {
       const depth = h.rad + o.rad - d;
       if (depth <= 0) continue;
       res.contact = true;
-      if (o.locked || hp.y - h.hy > p.y + o.hy - 0.05) { res.blocked = true; continue; }  // 위에 올려놓는 중
+      if (o.locked || hp.y - h.hy > p.y + o.hy - 0.05) { res.blocked = true; res.blockDepth += depth; continue; }  // 위에 올려놓는 중
       addPush(o, d > 1e-6 ? (dx / d) * depth : depth, d > 1e-6 ? (dz / d) * depth : 0);
     }
   }
@@ -637,7 +635,7 @@ function resolveContacts(apply = true) {
   for (const [o, [x, z]] of pushes) {
     const np = o.mesh.position.clone();
     np.x += x * 1.02; np.z += z * 1.02;
-    if (objBlockedAt(o, np)) { res.blocked = true; continue; }
+    if (objBlockedAt(o, np)) { res.blocked = true; res.blockDepth += Math.hypot(x, z); continue; }
     let ok = true;
     const chain = [];
     for (const q of state.objects) {
@@ -654,7 +652,7 @@ function resolveContacts(apply = true) {
       if (objBlockedAt(q, qnp)) { ok = false; break; }
       chain.push([q, qnp]);
     }
-    if (!ok) { res.blocked = true; continue; }
+    if (!ok) { res.blocked = true; res.blockDepth += Math.hypot(x, z); continue; }
     moves.push([o, np], ...chain);
   }
   if (apply) {
@@ -669,16 +667,34 @@ const restoreObjects = (snap) => snap.forEach(([o, x, z]) => { if (!o.held) { o.
 
 // 닿을 때 폰 진동 + 소리 (처음 닿는 순간 한 번, 계속 밀거나 누르면 짧게 반복)
 const touch = { prev: false, last: 0 };
-function contactFeedback(contact, hard, active, now) {
-  if (contact && !touch.prev && now - touch.last > 150) {
-    feedback({ vibrate: hard ? 180 : 90, contact: hard ? 'hit' : 'touch' });
-    beep(hard ? 130 : 240, 0.06, 'triangle', 0.07);
+// kind: null(닿지 않음) | 'touch'(물건) | 'hit'(벽·고정된 물건) | 'floor'(바닥)
+const TOUCH_FX = {
+  touch: { first: 90, again: 60, every: 300, tone: 240 },
+  hit:   { first: 180, again: 100, every: 450, tone: 130 },
+  floor: { first: [120, 70, 120], again: 120, every: 450, tone: 95, text: '바닥에 닿았어요' },
+};
+function contactFeedback(kind, active, now) {
+  const fx = kind && TOUCH_FX[kind];
+  if (fx && touch.prev !== kind && now - touch.last > 150) {
+    feedback({ vibrate: fx.first, contact: kind, ...(fx.text ? { text: fx.text } : {}) });
+    beep(fx.tone, kind === 'floor' ? 0.12 : 0.06, 'triangle', 0.08);
     touch.last = now;
-  } else if (contact && active && now - touch.last > (hard ? 450 : 300)) {
-    feedback({ vibrate: hard ? 100 : 60, contact: hard ? 'hit' : 'touch' });
+  } else if (fx && active && now - touch.last > fx.every) {
+    feedback({ vibrate: fx.again, contact: kind });
     touch.last = now;
   }
-  touch.prev = contact;
+  touch.prev = kind || null;
+}
+
+// 팔(관절 두께 포함)·손가락·들고 있는 물건이 바닥 아래로 들어간 깊이 (0 이면 정상)
+const FLOOR_Y = 0;
+function floorDepth() {
+  let d = 0;
+  for (const [s, r] of armSpheres()) d = Math.max(d, FLOOR_Y + r - s.y);
+  const tip = tipPoint.getWorldPosition(new THREE.Vector3());
+  d = Math.max(d, FLOOR_Y + 0.02 - tip.y);
+  if (state.held) d = Math.max(d, FLOOR_Y - objBox(state.held, _box).min.y);
+  return d;
 }
 
 
@@ -1211,7 +1227,7 @@ function tick(now) {
   }
 
   // 관절을 하나씩 움직여 보고, 부딪히면 그 관절만 되돌림 (벽을 따라 미끄러지듯)
-  let touched = false, hitHard = false;
+  let touched = false, hitHard = false, floorHit = false;
   if (rec.mode === 'play') {
     // 재생: 기록된 관절 각도와 집게 상태를 그대로 적용 (조종 입력은 무시)
     rec.t += dt;
@@ -1222,22 +1238,28 @@ function tick(now) {
     vel.yaw = vel.shoulder = vel.elbow = 0;
   } else {
     const moving = ['yaw', 'shoulder', 'elbow'].some((j) => Math.abs(vel[j]) > 1e-4);
-    // 이미 끼어 있는 자세라면 빠져나올 수 있도록 검사를 건너뜀
-    const stuck = moving && (poseInvalid() || resolveContacts(false).blocked);
+    // 지금 자세가 이미 끼어 있으면, 더 깊이 끼는 쪽은 막고 빠져나오는 쪽만 허용
+    let floor0 = moving ? floorDepth() : 0;
+    const wall0 = moving && poseInvalid();
+    let block0 = moving ? resolveContacts(false).blockDepth : 0;
     for (const j of ['yaw', 'shoulder', 'elbow']) {
       if (Math.abs(vel[j]) < 1e-4) continue;
       const prev = joint[j];
       const snap = snapObjects();
       joint[j] = Math.max(LIMITS[j][0], Math.min(LIMITS[j][1], prev + vel[j] * RATE[j] * dt));
       applyJoints(joint);
-      let bad = !stuck && poseInvalid();          // 벽·바닥
-      if (bad) { touched = true; hitHard = true; }
-      else if (!stuck) {
-        const c = resolveContacts(true);          // 물건 밀기
+      let bad = false;
+      const fd = floorDepth();
+      if (fd > 1e-4 && fd > floor0 + 1e-4) { bad = true; floorHit = true; }          // 바닥: 항상 막음
+      else if (!wall0 && poseInvalid()) { bad = true; hitHard = true; }              // 벽·받침대
+      else {
+        const c = resolveContacts(true);                                              // 물건 밀기
         if (c.contact) touched = true;
-        if (c.blocked) { bad = true; hitHard = true; }
+        if (c.blocked && c.blockDepth > block0 + 1e-4) { bad = true; hitHard = true; }
+        else block0 = c.blockDepth;
       }
       if (bad) { joint[j] = prev; vel[j] = 0; applyJoints(joint); restoreObjects(snap); }
+      else floor0 = Math.min(floor0, fd);
     }
     state.grip = playing ? Math.max(L.grip, k.has('Space') ? 1 : 0, input.keyLock ? 1 : 0) : 0;
   }
@@ -1254,7 +1276,10 @@ function tick(now) {
   const cc = resolveContacts(true);
   if (cc.contact) touched = true;
   const armActive = rec.mode === 'play' || ['yaw', 'shoulder', 'elbow'].some((j) => Math.abs(vel[j]) > 0.05) || cc.moved;
-  contactFeedback(touched, hitHard, armActive, performance.now());
+  // 진동 종류: 바닥 > 벽·고정된 물건 > 물건 (손끝이 바닥에 1cm 이내로 닿아 있어도 '바닥'으로 봄)
+  if (!floorHit && rec.mode !== 'play' && floorDepth() > -0.01 && tipPoint.getWorldPosition(new THREE.Vector3()).y < 0.05) floorHit = armActive;
+  const kind = floorHit ? 'floor' : hitHard ? 'hit' : touched ? 'touch' : null;
+  contactFeedback(kind, armActive || floorHit || hitHard, performance.now());
 
   // 녹화 / 재생 진행
   if (rec.mode === 'rec' && state.phase === 'play') {

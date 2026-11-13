@@ -26,9 +26,11 @@
   #flash { position: fixed; inset: 0; pointer-events: none; z-index: 20; border: 8px solid transparent; }
   #flash.touch { animation: flashTouch .28s ease-out; }
   #flash.hit { animation: flashHit .4s ease-out; }
+  #flash.floor { animation: flashFloor .45s ease-out; }
+  @keyframes flashFloor { from { border-color: #ff8a3d; background: rgba(255, 138, 61, .2); } to { border-color: transparent; background: transparent; } }
   @keyframes flashTouch { from { border-color: var(--warn); } to { border-color: transparent; } }
   @keyframes flashHit { from { border-color: var(--bad); background: rgba(255, 93, 108, .18); } to { border-color: transparent; background: transparent; } }
-  @media (prefers-reduced-motion: reduce) { #flash.touch, #flash.hit { animation-duration: .01s; } }
+  @media (prefers-reduced-motion: reduce) { #flash.touch, #flash.hit, #flash.floor { animation-duration: .01s; } }
 </style>
 </head>
 <body>
