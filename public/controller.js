@@ -1,4 +1,56 @@
-// 스마트폰 조종기 코드: 서버 연결, 센서 권한, 화면 꺼짐 방지
+// 스마트폰 조종기 코드: 서버 연결, 센서 권한, 화면 꺼짐 방지, 진동
+
+// ---- 진동 ----
+// 안드로이드: Vibration API (navigator.vibrate)
+// 아이폰: 사파리는 Vibration API가 없어서, iOS 18+ 에서 스위치를 켤 때 나는
+//         시스템 햅틱을 대신 사용 (지원하지 않는 버전에서는 진동 없음)
+// 폰 진동 모터는 50ms보다 짧으면 거의 느껴지지 않아서 최소 60ms로 늘림
+const MIN_PULSE = 60;
+export const haptics = (() => {
+  const canVibrate = typeof navigator.vibrate === 'function';
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let iosTap = null;
+  if (!canVibrate && isIOS) {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = '__hapticSwitch';
+    input.setAttribute('switch', '');
+    const label = document.createElement('label');
+    label.htmlFor = input.id;
+    for (const el of [input, label]) {
+      Object.assign(el.style, { position: 'fixed', left: '-9999px', top: '0', opacity: '0', pointerEvents: 'none' });
+    }
+    document.body.append(input, label);
+    iosTap = () => label.click();
+  }
+  const h = {
+    mode: canVibrate ? 'vibrate' : iosTap ? 'ios' : 'none',
+    lastOk: null,     // 마지막 진동 요청이 받아들여졌는지 (안드로이드에서 차단되면 false)
+    count: 0,         // PC에서 받은 진동 신호 수
+    pulse(pattern) {
+      const segs = (Array.isArray(pattern) ? pattern : [pattern]).map(Number).filter((v) => v > 0);
+      if (!segs.length) return false;
+      if (canVibrate) {
+        const p = segs.map((v, i) => (i % 2 === 0 ? Math.max(MIN_PULSE, v) : v));
+        let ok = false;
+        try { ok = navigator.vibrate(p); } catch { ok = false; }
+        h.lastOk = ok;
+        return ok;
+      }
+      if (iosTap) {
+        let t = 0;
+        segs.forEach((v, i) => { if (i % 2 === 0) setTimeout(iosTap, t); t += v; });
+        h.lastOk = true;
+        return true;
+      }
+      h.lastOk = false;
+      return false;
+    },
+  };
+  return h;
+})();
+
 export function createController({ role, onStatus, onFeedback }) {
   let ws = null;
   let open = false;
@@ -17,7 +69,7 @@ export function createController({ role, onStatus, onFeedback }) {
       try { m = JSON.parse(e.data); } catch { return; }
       if (m.type === 'status') onStatus && onStatus({ server: true, display: !!m.display });
       if (m.type === 'feedback') {
-        if (m.vibrate && navigator.vibrate) navigator.vibrate(m.vibrate);
+        if (m.vibrate) { haptics.count++; haptics.pulse(m.vibrate); }
         onFeedback && onFeedback(m);
       }
     };

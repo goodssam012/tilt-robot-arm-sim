@@ -19,6 +19,16 @@
   #btnRec.active { background: var(--bad); color: #fff; }
   #btnPlay.active, #btnLoop.active { background: var(--accent); color: #001; }
   body.playing .pad button, body.playing #btnCal, body.playing #btnSpeed { opacity: .4; }
+  header { flex-wrap: wrap; row-gap: 4px; }
+  #vibChip { cursor: pointer; padding: 2px 8px; margin: -2px -4px; border-radius: 99px; border: 1px solid var(--line); }
+  #vibChip .dot.warn { background: var(--warn); }
+  /* 접촉할 때 화면 테두리가 번쩍 (진동이 안 느껴져도 보이도록) */
+  #flash { position: fixed; inset: 0; pointer-events: none; z-index: 20; border: 8px solid transparent; }
+  #flash.touch { animation: flashTouch .28s ease-out; }
+  #flash.hit { animation: flashHit .4s ease-out; }
+  @keyframes flashTouch { from { border-color: var(--warn); } to { border-color: transparent; } }
+  @keyframes flashHit { from { border-color: var(--bad); background: rgba(255, 93, 108, .18); } to { border-color: transparent; background: transparent; } }
+  @media (prefers-reduced-motion: reduce) { #flash.touch, #flash.hit { animation-duration: .01s; } }
 </style>
 </head>
 <body>
@@ -28,6 +38,7 @@
     <span><i class="dot" id="dServer"></i>서버</span>
     <span><i class="dot" id="dDisplay"></i>PC</span>
     <span><i class="dot" id="dSensor"></i>센서</span>
+    <span id="vibChip" role="button" tabindex="0" title="눌러서 진동 테스트"><i class="dot" id="dVib"></i>진동 <b id="vibCount">0</b></span>
   </div>
 </header>
 
@@ -40,10 +51,8 @@
 </div>
 
 <p class="help">
-  화면이 위로 오게 눕혀 두 손으로 잡으세요.
-  <b>좌우 기울기</b> → 베이스 회전 · <b>앞뒤 기울기</b> → 어깨 ·
-  <b>왼쪽 버튼</b> → 팔꿈치 · <b>오른쪽 버튼</b> → 집기/놓기 ·
-  <b>● 녹화</b>한 동작은 <b>▶ 재생</b>으로 똑같이 반복돼요
+  <b>좌우 기울기</b> → 베이스 · <b>앞뒤 기울기</b> → 어깨 · <b>▲▼</b> → 팔꿈치 · <b>집기</b> → 잡기/놓기.
+  팔이 물건에 닿으면 진동해요 (위의 <b>진동</b>을 눌러 테스트)
 </p>
 
 <div class="grow">
@@ -78,18 +87,45 @@
   <p id="startErr" class="err"></p>
 </div>
 <div class="toast" id="toast"></div>
+<div id="flash"></div>
 
 <script type="module">
-import { createController, axis } from './controller.js';
+import { createController, axis, haptics } from './controller.js';
 
 const $ = (id) => document.getElementById(id);
 const toast = (t) => { $('toast').textContent = t; $('toast').classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => $('toast').classList.remove('show'), 1600); };
-const buzz = (ms) => navigator.vibrate && navigator.vibrate(ms);
+const buzz = (ms) => { haptics.pulse(ms); updateVibUI(); };
+
+// 진동 상태 표시: 초록 = 진동 됨, 노랑 = 아이폰 대체 햅틱, 빨강 = 진동 불가/차단
+function updateVibUI() {
+  const d = $('dVib');
+  d.classList.toggle('on', haptics.mode === 'vibrate' && haptics.lastOk !== false);
+  d.classList.toggle('warn', haptics.mode === 'ios');
+  $('vibCount').textContent = haptics.count;
+}
+function flash(kind) {
+  const f = $('flash');
+  f.className = '';
+  void f.offsetWidth;   // 애니메이션 다시 시작
+  f.className = kind;
+}
+function testVibration() {
+  const ok = haptics.pulse([200, 100, 200]);
+  updateVibUI();
+  flash('hit');
+  if (haptics.mode === 'none') toast('이 브라우저는 진동을 지원하지 않아요');
+  else if (haptics.mode === 'ios') toast('아이폰: iOS 18 이상에서만 약한 햅틱이 와요');
+  else if (!ok) toast('진동이 차단됐어요. 화면을 한 번 터치한 뒤 다시 눌러 보세요');
+  else toast('진동을 보냈어요. 안 느껴지면 무음·방해금지 해제, 진동 세기를 확인하세요');
+}
+$('vibChip').addEventListener('click', testVibration);
 
 const ctl = createController({
   role: 'phone',
   onStatus: (s) => { $('dServer').classList.toggle('on', s.server); $('dDisplay').classList.toggle('on', s.display); },
   onFeedback: (m) => {
+    if (m.vibrate) updateVibUI();
+    if (m.contact) flash(m.contact);
     if (m.text) toast(m.text);
     if (m.background) $('bgName').textContent = '배경 ' + m.background;
     if (m.rec) setRecMode(m.rec);
@@ -191,6 +227,7 @@ $('btnStart').onclick = async () => {
     await ctl.start();
     calibrate();
     $('overlay').style.display = 'none';
+    buzz(120);   // 시작할 때 한 번 진동 (진동이 되는 폰인지 바로 확인)
   } catch (e) {
     $('startErr').textContent = e.message;
   }

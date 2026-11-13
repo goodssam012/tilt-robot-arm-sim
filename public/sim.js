@@ -671,11 +671,11 @@ const restoreObjects = (snap) => snap.forEach(([o, x, z]) => { if (!o.held) { o.
 const touch = { prev: false, last: 0 };
 function contactFeedback(contact, hard, active, now) {
   if (contact && !touch.prev && now - touch.last > 150) {
-    feedback({ vibrate: hard ? 90 : 45 });
+    feedback({ vibrate: hard ? 180 : 90, contact: hard ? 'hit' : 'touch' });
     beep(hard ? 130 : 240, 0.06, 'triangle', 0.07);
     touch.last = now;
-  } else if (contact && active && now - touch.last > (hard ? 420 : 240)) {
-    feedback({ vibrate: hard ? 50 : 22 });
+  } else if (contact && active && now - touch.last > (hard ? 450 : 300)) {
+    feedback({ vibrate: hard ? 100 : 60, contact: hard ? 'hit' : 'touch' });
     touch.last = now;
   }
   touch.prev = contact;
@@ -937,7 +937,7 @@ function tryGrab() {
   wrG.attach(best.mesh);
   state.held = best;
   beep(880, 0.08, 'square', 0.06);
-  feedback({ vibrate: 40 });
+  feedback({ vibrate: 80 });
 }
 
 function releaseHeld() {
