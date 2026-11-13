@@ -131,6 +131,8 @@ const ctl = createController({
     if (m.text) toast(m.text);
     if (m.background) $('bgName').textContent = '배경 ' + m.background;
     if (m.rec) setRecMode(m.rec);
+    if (m.held === true) setGrip(true);              // 물건을 잡음 → 버튼은 '놓기'
+    if (m.held === false || m.gripFail) setGrip(false);  // 놓았거나 잡을 물건이 없음 → '집기'
     if (typeof m.loop === 'boolean') $('btnLoop').classList.toggle('active', m.loop);
   },
 });
@@ -175,30 +177,40 @@ setInterval(() => {
 }, 33);
 
 // 누르고 있는 동안만 동작하는 버튼 (여러 손가락 동시 터치 지원)
+// (터치와 마우스 신호를 따로 받으면 한 번 눌러도 두 번 실행되는 폰이 있어서 포인터 이벤트 하나만 사용)
 function holdButton(el, onDown, onUp) {
-  const down = (e) => { e.preventDefault(); el.classList.add('active'); onDown(); };
-  const up = (e) => { e.preventDefault(); el.classList.remove('active'); onUp(); };
-  el.addEventListener('touchstart', down, { passive: false });
-  el.addEventListener('touchend', up, { passive: false });
-  el.addEventListener('touchcancel', up, { passive: false });
-  el.addEventListener('mousedown', down);
-  el.addEventListener('mouseup', up);
-  el.addEventListener('mouseleave', (e) => { if (el.classList.contains('active')) up(e); });
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try { el.setPointerCapture(e.pointerId); } catch { /* 무시 */ }
+    el.classList.add('active');
+    onDown();
+  });
+  const up = () => { if (!el.classList.contains('active')) return; el.classList.remove('active'); onUp(); };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('lostpointercapture', up);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());   // 길게 누를 때 메뉴 방지
 }
 holdButton($('btnUp'), () => { elbowDir = -1; }, () => { if (elbowDir === -1) elbowDir = 0; });
 holdButton($('btnDown'), () => { elbowDir = 1; }, () => { if (elbowDir === 1) elbowDir = 0; });
 
 // 집게: 한 번 누르면 집기, 다시 누르면 놓기
-function toggleGrip(e) {
-  e.preventDefault();
-  grip = !grip;
-  $('btnGrip').classList.toggle('active', grip);
-  $('btnGrip').innerHTML = grip ? '🖐<br>놓기' : '✊<br>집기';
-  $('gripText').textContent = grip ? '닫힘' : '열림';
-  buzz(grip ? 30 : 15);
+function setGrip(on) {
+  grip = on;
+  $('btnGrip').classList.toggle('active', on);
+  $('btnGrip').innerHTML = on ? '🖐<br>놓기' : '✊<br>집기';
+  $('gripText').textContent = on ? '닫힘' : '열림';
 }
-$('btnGrip').addEventListener('touchstart', toggleGrip, { passive: false });
-$('btnGrip').addEventListener('mousedown', toggleGrip);
+let lastGripTap = 0;
+$('btnGrip').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const now = performance.now();
+  if (now - lastGripTap < 300) return;   // 같은 터치가 두 번 들어오는 경우 무시
+  lastGripTap = now;
+  setGrip(!grip);
+  buzz(grip ? 30 : 15);
+});
+$('btnGrip').addEventListener('contextmenu', (e) => e.preventDefault());
 
 const event = (name) => { ctl.send({ type: 'event', name }); buzz(20); };
 

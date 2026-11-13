@@ -953,7 +953,7 @@ function tryGrab() {
   wrG.attach(best.mesh);
   state.held = best;
   beep(880, 0.08, 'square', 0.06);
-  feedback({ vibrate: 80 });
+  feedback({ vibrate: 80, held: true });
 }
 
 function releaseHeld() {
@@ -966,6 +966,7 @@ function releaseHeld() {
   o.resting = false;
   o.vy = 0;
   state.held = null;
+  feedback({ held: false });
   beep(440, 0.08, 'square', 0.05);
 }
 
@@ -1198,6 +1199,7 @@ $('fileLoad').onchange = (e) => { if (e.target.files[0]) recLoadFile(e.target.fi
 // ---------------- 메인 루프 ----------------
 const RATE = { yaw: 75 * DEG, shoulder: 48 * DEG, elbow: 65 * DEG };
 const vel = { yaw: 0, shoulder: 0, elbow: 0 };
+const gripWait = { t: 0, failed: false };   // 폰 '집기' 후 잡기 대기 시간
 let last = performance.now();
 
 function frame(now) {
@@ -1261,7 +1263,20 @@ function tick(now) {
       if (bad) { joint[j] = prev; vel[j] = 0; applyJoints(joint); restoreObjects(snap); }
       else floor0 = Math.min(floor0, fd);
     }
-    state.grip = playing ? Math.max(L.grip, k.has('Space') ? 1 : 0, input.keyLock ? 1 : 0) : 0;
+    // 폰의 '집기'를 눌렀는데 0.45초 안에 잡히는 물건이 없으면 집게를 다시 열고 폰 버튼도 '집기'로 되돌림
+    let phoneGrip = L.grip;
+    if (phoneGrip > 0.5 && !state.held) {
+      gripWait.t += dt;
+      if (gripWait.t > 0.45 && !gripWait.failed) {
+        gripWait.failed = true;
+        feedback({ gripFail: true, vibrate: [40, 60, 40], text: '잡을 물건이 없어요 · 집게를 물건 위에 맞춰 주세요' });
+      }
+    } else if (phoneGrip <= 0.5) {
+      gripWait.t = 0;
+      gripWait.failed = false;
+    }
+    if (gripWait.failed && !state.held) phoneGrip = 0;
+    state.grip = playing ? Math.max(phoneGrip, k.has('Space') ? 1 : 0, input.keyLock ? 1 : 0) : 0;
   }
 
   // 집게
