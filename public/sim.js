@@ -249,14 +249,21 @@ wrCap.rotation.x = Math.PI / 2;
 const flange = cyl(0.15, 0.15, 0.035, mat.chrome);
 flange.rotation.z = Math.PI / 2;
 flange.position.x = 0.09;
-const palm = rbox(0.1, 0.18, 0.74, 0.035, mat.gun);
+// 원형 손바닥 + 십자 가이드 레일 (손가락 4개가 레일을 따라 열리고 닫힘)
+const palm = cyl(0.3, 0.3, 0.1, mat.gun, 56);
+palm.rotation.z = Math.PI / 2;
 palm.position.x = 0.155;
-const rail = cyl(0.018, 0.018, 0.7, mat.chrome, 16);
-rail.rotation.x = Math.PI / 2;
-rail.position.x = 0.215;
-const palmGlow = mesh(new THREE.BoxGeometry(0.01, 0.02, 0.4), mat.glow, false);
-palmGlow.position.set(0.155, 0.091, 0);
-wrG.add(wrHub, wrCap, flange, palm, rail, palmGlow);
+const palmGlow = mesh(new THREE.TorusGeometry(0.302, 0.011, 8, 80), mat.glow, false);
+palmGlow.rotation.y = Math.PI / 2;
+palmGlow.position.x = 0.155;
+const railA = rbox(0.03, 0.86, 0.045, 0.012, mat.chrome);
+railA.position.x = 0.215;
+const railB = rbox(0.03, 0.045, 0.86, 0.012, mat.chrome);
+railB.position.x = 0.215;
+const palmCap = cyl(0.08, 0.08, 0.04, mat.brass, 32);
+palmCap.rotation.z = Math.PI / 2;
+palmCap.position.x = 0.23;
+wrG.add(wrHub, wrCap, flange, palm, palmGlow, railA, railB, palmCap);
 
 function makeFinger(side) {
   const g = new THREE.Group();
@@ -271,9 +278,16 @@ function makeFinger(side) {
   g.position.x = 0.2 + 0.19;
   return g;
 }
-const fingerL = makeFinger(1);
-const fingerR = makeFinger(-1);
-wrG.add(fingerL, fingerR);
+// 손가락 4개를 90°씩 돌려 배치 (각 손가락은 회전축 그룹 안에서 바깥쪽으로 열림)
+const fingers = [0, 1, 2, 3].map((i) => {
+  const angle = (i * Math.PI) / 2;   // 십자 레일 위에 하나씩
+  const pivot = new THREE.Group();
+  pivot.rotation.x = angle;
+  const finger = makeFinger(1);
+  pivot.add(finger);
+  wrG.add(pivot);
+  return { angle, pivot, finger };
+});
 const grabPoint = new THREE.Object3D();
 grabPoint.position.x = GRAB;
 wrG.add(grabPoint);
@@ -436,7 +450,8 @@ function loadMission(level) {
     om2.position.set(o.pos[0], hy, o.pos[1]);
     om2.rotation.y = (((level * 7 + state.objects.length * 13) % 10) / 10) * Math.PI;  // 매번 같은 방향 (재생 재현용)
     missionGroup.add(om2);
-    state.objects.push({ id: o.id, label: o.label, color: o.color, mesh: om2, hx, hy, hz, held: false, resting: true, vy: 0, locked: false, supportId: null });
+    const rad = o.shape === 'box' ? hx * 1.12 : hx;   // 충돌용 반지름
+    state.objects.push({ id: o.id, label: o.label, color: o.color, shape: o.shape, rad, mesh: om2, hx, hy, hz, held: false, resting: true, vy: 0, locked: false, supportId: null });
   }
 
   // 화면 표시
@@ -529,13 +544,7 @@ function poseInvalid() {
   for (const ob of state.obstacles) {
     for (const p of pts) if (inObstacle(p, ob, 0.07)) return true;
   }
-  // 집게가 고정된(완료된) 물건이나 다른 물건 속으로 파고들지 않게
-  // (집게 끝이 물건 안에 있어도, 손가락 사이로 물건을 감싸는 위치면 허용)
-  for (const o of state.objects) {
-    if (o.held) continue;
-    objBox(o, _box).expandByScalar(-0.03);
-    if (_box.containsPoint(tip) && Math.hypot(tip.x - o.mesh.position.x, tip.z - o.mesh.position.z) > 0.12) return true;
-  }
+  // (물건과의 충돌은 resolveContacts 에서 밀기/막기로 처리)
   // 들고 있는 물건
   if (state.held) {
     const h = state.held;
@@ -545,14 +554,133 @@ function poseInvalid() {
     for (const x of [_box.min.x, _box.max.x]) for (const y of [_box.min.y, _box.max.y]) for (const z of [_box.min.z, _box.max.z]) corners.push(new THREE.Vector3(x, y, z));
     corners.push(_box.getCenter(new THREE.Vector3()));
     for (const ob of state.obstacles) for (const p of corners) if (inObstacle(p, ob, 0.0)) return true;
-    const hb = _box.clone().expandByScalar(-0.02);
-    for (const o of state.objects) {
-      if (o === h) continue;
-      if (objBox(o, new THREE.Box3()).intersectsBox(hb)) return true;
-    }
   }
   return false;
 }
+
+// ---------------- 접촉 / 밀기 ----------------
+// 로봇팔을 작은 구(球) 여러 개로 근사해서 물건과 겹치는지 검사합니다.
+// 옆에서 닿으면 물건을 겹친 만큼 밀어내고, 위에서 누르거나
+// 고정된 물건·벽 때문에 밀 수 없으면 blocked 로 알려 팔 움직임을 막습니다.
+const FINGER_XS = [0.26, 0.41, 0.56];
+function armSpheres() {
+  const list = [];
+  const S = shG.getWorldPosition(new THREE.Vector3());
+  const E = elG.getWorldPosition(new THREE.Vector3());
+  const W = wrG.getWorldPosition(new THREE.Vector3());
+  for (let i = 2; i <= 6; i++) list.push([S.clone().lerp(E, i / 6), 0.12]);   // 위팔
+  for (let i = 1; i <= 6; i++) list.push([E.clone().lerp(W, i / 6), 0.1]);    // 아래팔
+  list.push([wrG.localToWorld(new THREE.Vector3(0.16, 0, 0)), 0.07]);          // 손바닥 중심
+  for (const f of fingers) {
+    const c = Math.cos(f.angle), s = Math.sin(f.angle);
+    list.push([wrG.localToWorld(new THREE.Vector3(0.155, -0.24 * s, 0.24 * c)), 0.07]);  // 손바닥 가장자리
+    const r = f.finger.position.z;
+    for (const x of FINGER_XS) list.push([wrG.localToWorld(new THREE.Vector3(x, -r * s, r * c)), 0.04]);  // 손가락
+  }
+  return list;
+}
+
+// 물건을 np 위치로 옮겼을 때 벽·받침대에 박히는지
+function objBlockedAt(o, np) {
+  const r = o.rad * 0.95;
+  const pts = [np, new THREE.Vector3(np.x + r, np.y, np.z), new THREE.Vector3(np.x - r, np.y, np.z),
+    new THREE.Vector3(np.x, np.y, np.z + r), new THREE.Vector3(np.x, np.y, np.z - r)];
+  return state.obstacles.some((ob) => pts.some((p) => inObstacle(p, ob, 0)));
+}
+const vOverlap = (a, ay, b, by) => ay - a.hy < by + b.hy && ay + a.hy > by - b.hy;
+
+function resolveContacts(apply = true) {
+  const res = { contact: false, blocked: false, moved: false };
+  const pushes = new Map();
+  const addPush = (o, x, z) => {
+    const v = pushes.get(o);
+    if (!v || x * x + z * z > v[0] * v[0] + v[1] * v[1]) pushes.set(o, [x, z]);
+  };
+
+  // 1) 팔과 물건
+  const spheres = armSpheres();
+  for (const o of state.objects) {
+    if (o.held) continue;
+    const p = o.mesh.position, top = p.y + o.hy, bottom = p.y - o.hy;
+    for (const [s, r] of spheres) {
+      if (s.y - r >= top || s.y + r <= bottom) continue;
+      const dx = p.x - s.x, dz = p.z - s.z, d = Math.hypot(dx, dz);
+      const depth = o.rad + r - d;
+      if (depth <= 0) continue;
+      res.contact = true;
+      // 위에서 누르는 경우나 완료되어 고정된 물건은 밀리지 않음
+      if (o.locked || (s.y > top - 0.02 && d < o.rad)) { res.blocked = true; continue; }
+      addPush(o, d > 1e-6 ? (dx / d) * depth : depth, d > 1e-6 ? (dz / d) * depth : 0);
+    }
+  }
+
+  // 2) 들고 있는 물건과 다른 물건
+  const h = state.held;
+  if (h) {
+    const hp = h.mesh.getWorldPosition(new THREE.Vector3());
+    for (const o of state.objects) {
+      if (o === h) continue;
+      const p = o.mesh.position;
+      if (!vOverlap(h, hp.y, o, p.y)) continue;
+      const dx = p.x - hp.x, dz = p.z - hp.z, d = Math.hypot(dx, dz);
+      const depth = h.rad + o.rad - d;
+      if (depth <= 0) continue;
+      res.contact = true;
+      if (o.locked || hp.y - h.hy > p.y + o.hy - 0.05) { res.blocked = true; continue; }  // 위에 올려놓는 중
+      addPush(o, d > 1e-6 ? (dx / d) * depth : depth, d > 1e-6 ? (dz / d) * depth : 0);
+    }
+  }
+  if (!pushes.size) return res;
+
+  // 3) 밀기 적용 (밀린 물건이 다른 물건을 한 번 더 밀 수 있음)
+  const moves = [];
+  for (const [o, [x, z]] of pushes) {
+    const np = o.mesh.position.clone();
+    np.x += x * 1.02; np.z += z * 1.02;
+    if (objBlockedAt(o, np)) { res.blocked = true; continue; }
+    let ok = true;
+    const chain = [];
+    for (const q of state.objects) {
+      if (q === o || q.held || pushes.has(q)) continue;
+      const qp = q.mesh.position;
+      if (!vOverlap(o, np.y, q, qp.y)) continue;
+      const dx = qp.x - np.x, dz = qp.z - np.z, d = Math.hypot(dx, dz);
+      const depth = o.rad + q.rad - d;
+      if (depth <= 0) continue;
+      if (q.locked) { ok = false; break; }
+      const qnp = qp.clone();
+      qnp.x += (d > 1e-6 ? dx / d : 1) * depth * 1.02;
+      qnp.z += (d > 1e-6 ? dz / d : 0) * depth * 1.02;
+      if (objBlockedAt(q, qnp)) { ok = false; break; }
+      chain.push([q, qnp]);
+    }
+    if (!ok) { res.blocked = true; continue; }
+    moves.push([o, np], ...chain);
+  }
+  if (apply) {
+    for (const [o, np] of moves) { o.mesh.position.x = np.x; o.mesh.position.z = np.z; }
+    res.moved = moves.length > 0;
+  }
+  return res;
+}
+
+const snapObjects = () => state.objects.map((o) => [o, o.mesh.position.x, o.mesh.position.z]);
+const restoreObjects = (snap) => snap.forEach(([o, x, z]) => { if (!o.held) { o.mesh.position.x = x; o.mesh.position.z = z; } });
+
+// 닿을 때 폰 진동 + 소리 (처음 닿는 순간 한 번, 계속 밀거나 누르면 짧게 반복)
+const touch = { prev: false, last: 0 };
+function contactFeedback(contact, hard, active, now) {
+  if (contact && !touch.prev && now - touch.last > 150) {
+    feedback({ vibrate: hard ? 90 : 45 });
+    beep(hard ? 130 : 240, 0.06, 'triangle', 0.07);
+    touch.last = now;
+  } else if (contact && active && now - touch.last > (hard ? 420 : 240)) {
+    feedback({ vibrate: hard ? 50 : 22 });
+    touch.last = now;
+  }
+  touch.prev = contact;
+}
+
 
 // ---------------- 입력 ----------------
 const input = {
@@ -830,7 +958,7 @@ function releaseHeld() {
 // 재생할 때 같은 단계·같은 시작 상태(물건 배치, 움직이는 구역 시간)로 되돌린 뒤
 // 기록된 자세를 그대로 적용하므로 매번 똑같이 반복됩니다.
 const REC_KEY = 'robot-arm-recording-v1';
-const REC_MIN_STEP = 1 / 60;           // 최대 초당 60프레임 기록
+const REC_MIN_STEP = 0;               // 매 프레임 기록 (밀기 결과까지 같게 재현)
 const rec = {
   mode: 'idle',      // idle | rec | play
   cur: null,         // 녹화 중인 기록
@@ -1083,7 +1211,7 @@ function tick(now) {
   }
 
   // 관절을 하나씩 움직여 보고, 부딪히면 그 관절만 되돌림 (벽을 따라 미끄러지듯)
-  // 이미 끼어 있는 자세라면 빠져나올 수 있도록 검사를 건너뜀
+  let touched = false, hitHard = false;
   if (rec.mode === 'play') {
     // 재생: 기록된 관절 각도와 집게 상태를 그대로 적용 (조종 입력은 무시)
     rec.t += dt;
@@ -1094,13 +1222,22 @@ function tick(now) {
     vel.yaw = vel.shoulder = vel.elbow = 0;
   } else {
     const moving = ['yaw', 'shoulder', 'elbow'].some((j) => Math.abs(vel[j]) > 1e-4);
-    const stuck = moving && poseInvalid();
+    // 이미 끼어 있는 자세라면 빠져나올 수 있도록 검사를 건너뜀
+    const stuck = moving && (poseInvalid() || resolveContacts(false).blocked);
     for (const j of ['yaw', 'shoulder', 'elbow']) {
       if (Math.abs(vel[j]) < 1e-4) continue;
       const prev = joint[j];
+      const snap = snapObjects();
       joint[j] = Math.max(LIMITS[j][0], Math.min(LIMITS[j][1], prev + vel[j] * RATE[j] * dt));
       applyJoints(joint);
-      if (!stuck && poseInvalid()) { joint[j] = prev; vel[j] = 0; applyJoints(joint); }
+      let bad = !stuck && poseInvalid();          // 벽·바닥
+      if (bad) { touched = true; hitHard = true; }
+      else if (!stuck) {
+        const c = resolveContacts(true);          // 물건 밀기
+        if (c.contact) touched = true;
+        if (c.blocked) { bad = true; hitHard = true; }
+      }
+      if (bad) { joint[j] = prev; vel[j] = 0; applyJoints(joint); restoreObjects(snap); }
     }
     state.grip = playing ? Math.max(L.grip, k.has('Space') ? 1 : 0, input.keyLock ? 1 : 0) : 0;
   }
@@ -1110,9 +1247,14 @@ function tick(now) {
   if (!state.held && state.grip > 0.55) tryGrab();
   if (state.held && state.grip < 0.35) releaseHeld();
   let gap = MAX_GAP * (1 - state.gripVis) + 0.08;
-  if (state.held) gap = Math.max(gap, Math.min(state.held.hx, state.held.hz) * 2 + 0.06);
-  fingerL.position.z = gap / 2 + 0.03;
-  fingerR.position.z = -gap / 2 - 0.03;
+  if (state.held) gap = Math.max(gap, state.held.rad * 2 + 0.02);
+  for (const f of fingers) f.finger.position.z = gap / 2 + 0.03;
+
+  // 손가락이 닫히거나 재생 중 팔이 움직이며 닿은 물건 밀기 + 접촉 진동
+  const cc = resolveContacts(true);
+  if (cc.contact) touched = true;
+  const armActive = rec.mode === 'play' || ['yaw', 'shoulder', 'elbow'].some((j) => Math.abs(vel[j]) > 0.05) || cc.moved;
+  contactFeedback(touched, hitHard, armActive, performance.now());
 
   // 녹화 / 재생 진행
   if (rec.mode === 'rec' && state.phase === 'play') {
