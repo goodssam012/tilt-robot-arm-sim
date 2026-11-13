@@ -288,6 +288,14 @@ const fingers = [0, 1, 2, 3].map((i) => {
   wrG.add(pivot);
   return { angle, pivot, finger };
 });
+const PAD_IN = 0.043;   // 손가락 중심 ~ 안쪽 고무 패드 면 거리
+// 손가락이 열리는 방향 (위에서 본 단위 벡터)
+function fingerDir(f) {
+  const a = wrG.getWorldPosition(new THREE.Vector3());
+  const b = wrG.localToWorld(new THREE.Vector3(0, -Math.sin(f.angle), Math.cos(f.angle)));
+  const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz) || 1;
+  return [dx / l, dz / l];
+}
 const grabPoint = new THREE.Object3D();
 grabPoint.position.x = GRAB;
 wrG.add(grabPoint);
@@ -559,6 +567,75 @@ function poseInvalid() {
 // 로봇팔을 작은 구(球) 여러 개로 근사해서 물건과 겹치는지 검사합니다.
 // 옆에서 닿으면 물건을 겹친 만큼 밀어내고, 위에서 누르거나
 // 고정된 물건·벽 때문에 밀 수 없으면 blocked 로 알려 팔 움직임을 막습니다.
+// ---- 물건 모양 계산 (상자는 실제 사각형, 원기둥·공은 원) ----
+const _q = new THREE.Quaternion();
+const _e = new THREE.Euler();
+const _wp = new THREE.Vector3();
+// 물건의 세계 기준 회전각(위에서 본 방향)
+function worldYaw(o) {
+  if (!o.held) return o.mesh.rotation.y;
+  o.mesh.getWorldQuaternion(_q);
+  return _e.setFromQuaternion(_q, 'YXZ').y;
+}
+// 높이 구간 [yLo, yHi] 에서 본 물건의 단면 반지름 (공은 높이에 따라 작아짐)
+function sliceRadius(o, cy, yLo, yHi) {
+  if (o.shape !== 'ball') return o.hx;
+  const dy = cy >= yLo && cy <= yHi ? 0 : Math.min(Math.abs(cy - yLo), Math.abs(cy - yHi));
+  return Math.sqrt(Math.max(0, o.hx * o.hx - dy * dy));
+}
+
+// 구(sx, sz, 반지름 r)가 물건과 겹친 정도. 겹치지 않으면 null
+// nx, nz: 물건이 밀려나갈 방향, over: 구의 중심이 물건 바로 위(발자국 안)에 있는지
+function sphereVsObj(o, sx, sz, r) {
+  const p = o.mesh.position;
+  const wx = sx - p.x, wz = sz - p.z;
+  if (o.shape === 'box') {
+    const yaw = o.mesh.rotation.y, c = Math.cos(yaw), s = Math.sin(yaw), h = o.hx;
+    const lx = wx * c - wz * s, lz = wx * s + wz * c;          // 상자 기준 좌표
+    const qx = Math.max(-h, Math.min(h, lx)), qz = Math.max(-h, Math.min(h, lz));
+    const ex = lx - qx, ez = lz - qz, dist = Math.hypot(ex, ez);
+    let nlx, nlz, depth;
+    if (dist > 1e-9) {
+      if (dist >= r) return null;
+      nlx = -ex / dist; nlz = -ez / dist; depth = r - dist;
+    } else {                                                    // 구의 중심이 상자 안
+      const fx = h - Math.abs(lx), fz = h - Math.abs(lz);
+      if (fx < fz) { nlx = -(Math.sign(lx) || 1); nlz = 0; depth = r + fx; }
+      else { nlx = 0; nlz = -(Math.sign(lz) || 1); depth = r + fz; }
+    }
+    return { depth, nx: nlx * c + nlz * s, nz: -nlx * s + nlz * c, over: Math.abs(lx) < h && Math.abs(lz) < h };
+  }
+  const R = o.hx, d = Math.hypot(wx, wz), depth = R + r - d;
+  if (depth <= 0) return null;
+  return { depth, nx: d > 1e-6 ? -wx / d : 1, nz: d > 1e-6 ? -wz / d : 0, over: d < R };
+}
+
+// 집게 축(ax, az)에서 방향(ux, uz)으로 뻗은 손가락이 안쪽으로 닫힐 때
+// 처음 물건 표면에 닿는 거리. 닿지 않으면 -Infinity
+function fingerContactDist(o, ax, az, ux, uz, yLo, yHi) {
+  const p = o.mesh.getWorldPosition(_wp);
+  if (yHi < p.y - o.hy || yLo > p.y + o.hy) return -Infinity;
+  const rx = ax - p.x, rz = az - p.z;
+  if (o.shape === 'box') {
+    const yaw = worldYaw(o), c = Math.cos(yaw), s = Math.sin(yaw), h = o.hx;
+    const P = [rx * c - rz * s, rx * s + rz * c];
+    const D = [ux * c - uz * s, ux * s + uz * c];
+    let tmin = -Infinity, tmax = Infinity;
+    for (let i = 0; i < 2; i++) {
+      if (Math.abs(D[i]) < 1e-9) { if (Math.abs(P[i]) > h) return -Infinity; continue; }
+      const t1 = (-h - P[i]) / D[i], t2 = (h - P[i]) / D[i];
+      tmin = Math.max(tmin, Math.min(t1, t2));
+      tmax = Math.min(tmax, Math.max(t1, t2));
+    }
+    return tmax >= tmin ? tmax : -Infinity;
+  }
+  const R = sliceRadius(o, p.y, yLo, yHi);
+  const wx = -rx, wz = -rz;
+  const proj = wx * ux + wz * uz, perp2 = wx * wx + wz * wz - proj * proj;
+  if (perp2 > R * R) return -Infinity;
+  return proj + Math.sqrt(R * R - perp2);
+}
+
 const FINGER_XS = [0.26, 0.41, 0.56];
 function armSpheres() {
   const list = [];
@@ -602,13 +679,12 @@ function resolveContacts(apply = true) {
     const p = o.mesh.position, top = p.y + o.hy, bottom = p.y - o.hy;
     for (const [s, r] of spheres) {
       if (s.y - r >= top || s.y + r <= bottom) continue;
-      const dx = p.x - s.x, dz = p.z - s.z, d = Math.hypot(dx, dz);
-      const depth = o.rad + r - d;
-      if (depth <= 0) continue;
+      const hit = sphereVsObj(o, s.x, s.z, r);
+      if (!hit) continue;
       res.contact = true;
       // 위에서 누르는 경우나 완료되어 고정된 물건은 밀리지 않음
-      if (o.locked || (s.y > top - 0.02 && d < o.rad)) { res.blocked = true; res.blockDepth += depth; continue; }
-      addPush(o, d > 1e-6 ? (dx / d) * depth : depth, d > 1e-6 ? (dz / d) * depth : 0);
+      if (o.locked || (s.y > top - 0.02 && hit.over)) { res.blocked = true; res.blockDepth += hit.depth; continue; }
+      addPush(o, hit.nx * hit.depth, hit.nz * hit.depth);
     }
   }
 
@@ -952,6 +1028,19 @@ function tryGrab() {
   best.vy = 0;
   wrG.attach(best.mesh);
   state.held = best;
+  // 실제 4손가락 그리퍼처럼: 닫히면서 물건을 집게 가운데로 끌어오고, 상자는 손가락과 면이 맞게 돌림
+  const lp = best.mesh.position;
+  const targetPos = new THREE.Vector3(lp.x, 0, 0);
+  let targetQuat = best.mesh.quaternion.clone();
+  if (best.shape === 'box') {
+    const [ux, uz] = fingerDir(fingers[0]);
+    const yawF = Math.atan2(-uz, ux);
+    const yawO = worldYaw(best);
+    const yawT = yawF + Math.round((yawO - yawF) / (Math.PI / 2)) * (Math.PI / 2);
+    const qWorld = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yawT, 0, 'YXZ'));
+    targetQuat = wrG.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(qWorld);
+  }
+  best.grabAnim = { pos: targetPos, quat: targetQuat };
   beep(880, 0.08, 'square', 0.06);
   feedback({ vibrate: 80, held: true });
 }
@@ -1283,9 +1372,30 @@ function tick(now) {
   state.gripVis += (state.grip - state.gripVis) * (1 - Math.exp(-dt * 14));
   if (!state.held && state.grip > 0.55) tryGrab();
   if (state.held && state.grip < 0.35) releaseHeld();
-  let gap = MAX_GAP * (1 - state.gripVis) + 0.08;
-  if (state.held) gap = Math.max(gap, state.held.rad * 2 + 0.02);
-  for (const f of fingers) f.finger.position.z = gap / 2 + 0.03;
+  // 잡은 물건을 집게 가운데로 정렬하는 짧은 애니메이션
+  if (state.held && state.held.grabAnim) {
+    const ga = state.held.grabAnim, kk = 1 - Math.exp(-dt * 20);
+    state.held.mesh.position.lerp(ga.pos, kk);
+    state.held.mesh.quaternion.slerp(ga.quat, kk);
+    if (state.held.mesh.position.distanceToSquared(ga.pos) < 1e-8) state.held.grabAnim = null;
+  }
+  // 손가락: 원하는 벌림까지 닫히되, 물건 표면에 닿으면 그 자리에서 멈춤 (뚫고 들어가지 않음)
+  const gap = MAX_GAP * (1 - state.gripVis) + 0.08;
+  const rWant = gap / 2 + 0.03;
+  const W = wrG.getWorldPosition(new THREE.Vector3());
+  const yLo = W.y - 0.58, yHi = W.y - 0.2;          // 손가락이 차지하는 높이
+  for (const f of fingers) {
+    const [ux, uz] = fingerDir(f);
+    const rNow = f.finger.position.z;
+    let r = rWant;
+    for (const o of state.objects) {
+      const sC = fingerContactDist(o, W.x, W.z, ux, uz, yLo, yHi);
+      if (sC === -Infinity) continue;
+      const rMin = sC + PAD_IN;
+      if (rNow >= rMin - 0.02 || o.held) r = Math.max(r, rMin);   // 바깥에서 닫혀 오던 손가락만 표면에서 멈춤
+    }
+    f.finger.position.z = r;
+  }
 
   // 손가락이 닫히거나 재생 중 팔이 움직이며 닿은 물건 밀기 + 접촉 진동
   const cc = resolveContacts(true);
@@ -1420,4 +1530,4 @@ updateRecUI();
 requestAnimationFrame(frame);
 
 // 디버그용 (브라우저 콘솔에서 상태 확인)
-window.__sim = { state, joint, input, tipPoint, grabPoint, tick, camera, rec };
+window.__sim = { state, joint, input, tipPoint, grabPoint, tick, camera, rec, fingers, fingerDir, fingerContactDist, worldYaw, wrG };
