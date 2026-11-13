@@ -11,8 +11,8 @@ const { WebSocketServer } = require('ws');
 const QRCode = require('qrcode');
 const selfsigned = require('selfsigned');
 
-const HTTP_PORT = 3000;
-const HTTPS_PORT = 3443;
+const HTTP_PORT = Number(process.env.PORT) || 3000;
+const HTTPS_PORT = Number(process.env.HTTPS_PORT) || 3443;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const CERT_DIR = path.join(__dirname, 'cert');
 
@@ -119,6 +119,7 @@ function sendStatus() {
 
 function attachWS(server) {
   const wss = new WebSocketServer({ server, path: '/ws' });
+  wss.on('error', () => { /* 포트 오류는 http 서버 쪽에서 처리 */ });
   wss.on('connection', (ws) => {
     ws.role = null;
     clients.add(ws);
@@ -158,6 +159,27 @@ function attachWS(server) {
   attachWS(httpServer);
   attachWS(httpsServer);
 
+  // --open: 서버가 켜지면 PC 화면을 브라우저로 자동으로 엶 (시작.bat 에서 사용)
+  const wantOpen = process.argv.includes('--open') && !process.env.NO_OPEN;
+  const openBrowser = () => {
+    if (!wantOpen) return;
+    const url = `http://localhost:${HTTP_PORT}`;
+    const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
+    require('child_process').exec(cmd, () => {});
+  };
+  // 이미 실행 중이면(시작.bat 을 두 번 누른 경우 등) 화면만 열고 끝냄
+  httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`
+시뮬레이터가 이미 실행 중이에요 → http://localhost:${HTTP_PORT}`);
+      openBrowser();
+      setTimeout(() => process.exit(0), 500);
+    } else {
+      console.error('서버를 시작하지 못했어요:', err.message);
+      process.exit(1);
+    }
+  });
+
   httpServer.listen(HTTP_PORT, () => {
     httpsServer.listen(HTTPS_PORT, () => {
       const ip = ips[0] || '<PC의 IP>';
@@ -168,7 +190,9 @@ function attachWS(server) {
       if (ips.length > 1) console.log(`(다른 IP 후보: ${ips.slice(1).join(', ')})`);
       console.log('폰과 PC는 같은 Wi-Fi 에 연결되어 있어야 합니다.');
       console.log('폰에서 "안전하지 않음" 경고가 뜨면 [고급] → [계속/방문] 을 누르세요.');
+      console.log('끝낼 때는 이 창을 닫거나 Ctrl + C 를 누르세요.');
       console.log('');
+      openBrowser();
     });
   });
 })();

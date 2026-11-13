@@ -4,7 +4,8 @@
   "description": "스마트폰 기울기 센서로 조종하는 3축 로봇팔 시뮬레이터",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "start:open": "node server.js --open"
   },
   "license": "MIT",
   "dependencies": {

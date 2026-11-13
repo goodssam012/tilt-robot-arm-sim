@@ -74,6 +74,9 @@
   .qr.guide h3 { justify-content: flex-start; }
   .qr.guide ul { margin: 10px 0 0; padding-left: 18px; font-size: 14px; line-height: 1.9; color: var(--muted); }
   .qr.guide b { color: var(--text); }
+  .room-row { margin-top: 10px; font-size: 14px; color: var(--muted); }
+  .room-row b { font-size: 26px; letter-spacing: .2em; color: var(--text); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .room-row[hidden] { display: none; }
   .qr .url { font-size: 12px; margin-top: 8px; word-break: break-all; color: var(--accent); user-select: all; }
   #connect .actions { margin-top: 16px; display: flex; gap: 10px; justify-content: center; }
   #connect .actions .btn { padding: 10px 22px; font-size: 15px; }
@@ -95,7 +98,7 @@
   @media (max-width: 960px) { #joints { display: none; } }
 </style>
 <script type="importmap">
-  { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+  { "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/examples/jsm/" } }
 </script>
 </head>
 <body>
@@ -148,13 +151,14 @@
 
 <div id="connect" class="panel">
   <h1>🦾 기울기 로봇팔 시뮬레이터</h1>
-  <p>PC와 스마트폰을 <b>같은 Wi‑Fi</b>에 연결한 뒤, 폰으로 QR 코드를 찍어 접속하세요.<br>
-     "연결이 비공개로 설정되어 있지 않습니다" 경고가 나오면 <b>[고급] → [계속/방문]</b>을 누르면 됩니다.</p>
+  <p>폰 카메라로 QR 코드를 찍어 접속하세요.<br>
+     <span id="warnTip">"연결이 비공개로 설정되어 있지 않습니다" 경고가 나오면 <b>[고급] → [계속/방문]</b>을 누르면 됩니다.</span></p>
   <div class="qrs">
     <div class="qr">
       <h3><i class="dot" id="qPhone"></i>스마트폰 조종기</h3>
-      <div class="desc">QR 코드를 찍어 접속하세요</div>
+      <div class="desc" id="connMode">연결 준비 중…</div>
       <div class="code" id="qrPhone"></div>
+      <div class="room-row" id="roomRow" hidden>방 코드 <b id="roomCode"></b></div>
       <div class="url" id="urlPhone"></div>
     </div>
     <div class="qr guide">

@@ -1,4 +1,5 @@
 // 스마트폰 조종기 코드: 서버 연결, 센서 권한, 화면 꺼짐 방지, 진동
+import { openPhoneLink } from './net.js';
 
 // ---- 진동 ----
 // 안드로이드: Vibration API (navigator.vibrate)
@@ -51,39 +52,22 @@ export const haptics = (() => {
   return h;
 })();
 
-export function createController({ role, onStatus, onFeedback }) {
-  let ws = null;
-  let open = false;
+// room 이 있으면 인터넷 직접 연결(웹 모드), 없으면 같은 Wi‑Fi의 PC 서버에 연결(로컬 모드)
+export function createController({ room = null, onStatus, onFeedback }) {
   const listeners = [];
-
-  function connect() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.onopen = () => {
-      open = true;
-      ws.send(JSON.stringify({ type: 'hello', role }));
-      onStatus && onStatus({ server: true, display: false });
-    };
-    ws.onmessage = (e) => {
-      let m;
-      try { m = JSON.parse(e.data); } catch { return; }
-      if (m.type === 'status') onStatus && onStatus({ server: true, display: !!m.display });
-      if (m.type === 'feedback') {
-        if (m.vibrate) { haptics.count++; haptics.pulse(m.vibrate); }
-        onFeedback && onFeedback(m);
-      }
-    };
-    ws.onclose = () => {
-      open = false;
-      onStatus && onStatus({ server: false, display: false });
-      setTimeout(connect, 1000);
-    };
-    ws.onerror = () => ws.close();
-  }
-  connect();
+  let link = null;
+  openPhoneLink({
+    room,
+    onStatus: (s) => onStatus && onStatus(s),
+    onMessage: (m) => {
+      if (m.type !== 'feedback') return;
+      if (m.vibrate) { haptics.count++; haptics.pulse(m.vibrate); }
+      onFeedback && onFeedback(m);
+    },
+  }).then((l) => { link = l; }).catch(() => onStatus && onStatus({ server: false, display: false }));
 
   function send(obj) {
-    if (open && ws.readyState === 1) ws.send(JSON.stringify(obj));
+    if (link) link.send(obj);
   }
 
   // ---- 센서 ----

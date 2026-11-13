@@ -4,6 +4,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { THEMES, applyTheme } from './themes.js';
 import { buildMission, COLORS, polar } from './missions.js';
+import { openDisplayLink } from './net.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -782,26 +783,24 @@ const input = {
 };
 const conn = { phone: false };
 
+let link = null;   // 폰 연결 (로컬 Wi‑Fi 또는 인터넷 직접 연결)
 function feedback(data) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'feedback', ...data }));
+  if (link) link.send({ type: 'feedback', ...data });
 }
 
-let ws;
-function connectWS() {
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', role: 'display' }));
-  ws.onmessage = (e) => {
-    let m;
-    try { m = JSON.parse(e.data); } catch { return; }
+function onPhoneStatus({ phone }) {
+  conn.phone = phone;
+  $('dPhone').classList.toggle('on', phone);
+  $('qPhone').classList.toggle('on', phone);
+  if (phone) feedback({ background: THEMES[state.themeIndex].name, rec: rec.mode, loop: rec.loop });
+  // 폰이 연결되면 자동으로 시작
+  if (phone && state.phase === 'intro') setTimeout(startFromIntro, 1200);
+}
+
+function onPhoneMessage(m) {
+  {
     const now = performance.now();
-    if (m.type === 'status') {
-      conn.phone = m.phone;
-      $('dPhone').classList.toggle('on', m.phone);
-      $('qPhone').classList.toggle('on', m.phone);
-      if (m.phone) feedback({ background: THEMES[state.themeIndex].name });
-      // 폰이 연결되면 자동으로 시작
-      if (m.phone && state.phase === 'intro') setTimeout(startFromIntro, 1200);
-    } else if (m.type === 'ctrl') {
+    if (m.type === 'ctrl') {
       Object.assign(input.phone, {
         yaw: +m.yaw || 0, shoulder: +m.shoulder || 0, elbow: +m.elbow || 0,
         grip: Math.max(0, Math.min(1, +m.grip || 0)), speed: +m.speed || 1, t: now,
@@ -809,10 +808,8 @@ function connectWS() {
     } else if (m.type === 'event') {
       handleEvent(m.name);
     }
-  };
-  ws.onclose = () => setTimeout(connectWS, 1000);
+  }
 }
-connectWS();
 
 function handleEvent(name) {
   if (name === 'bg_next') setTheme(state.themeIndex + 1);
@@ -1501,19 +1498,27 @@ addEventListener('resize', () => {
 });
 
 // ---------------- 시작 화면 ----------------
-async function loadConnectInfo() {
-  try {
-    const info = await (await fetch('/api/info')).json();
-    $('qrPhone').innerHTML = info.phoneQR;
-    $('urlPhone').textContent = info.phone;
+// 연결 정보(QR·방 코드) 표시
+function showConnectInfo(info) {
+  if (info.error) { $('ipNote').textContent = info.error; return; }
+  $('qrPhone').innerHTML = info.qrSvg;
+  $('urlPhone').textContent = info.phoneUrl;
+  if (info.mode === 'web') {
+    $('connMode').textContent = '인터넷 연결 모드 · 설치 없이 바로 사용';
+    $('roomCode').textContent = info.code;
+    $('roomRow').hidden = false;
+    $('warnTip').textContent = '폰에서 QR 주소를 열고 [시작하기]를 누르면 연결됩니다.';
+    $('ipNote').textContent = 'PC와 폰 모두 인터넷이 되어야 해요. 연결이 잘 안 되면 같은 Wi‑Fi에 연결하거나, PC에서 시작.bat 으로 실행해 보세요.';
+  } else {
+    $('connMode').textContent = '같은 Wi‑Fi 연결 모드 (이 PC에서 실행 중)';
+    $('roomRow').hidden = true;
     $('ipNote').textContent = info.ips.length > 1
       ? `QR로 접속이 안 되면 주소의 IP를 다음 중 하나로 바꿔 보세요: ${info.ips.join(', ')}`
       : '폰이 접속되지 않으면 PC 방화벽에서 Node.js 허용 여부를 확인하세요.';
-  } catch {
-    $('ipNote').textContent = '서버 정보를 가져오지 못했어요. node server.js 로 실행했는지 확인하세요.';
   }
 }
-loadConnectInfo();
+openDisplayLink({ onMessage: onPhoneMessage, onStatus: onPhoneStatus, onInfo: showConnectInfo })
+  .then((l) => { link = l; });
 
 function startFromIntro() {
   $('connect').classList.add('hidden');
