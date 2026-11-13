@@ -101,6 +101,7 @@ function makeHandler(ips) {
 // 폰이 보낸 메시지는 모든 display 로 전달하고,
 // 폰 연결 상태가 바뀌면 display 에 알려줍니다.
 const clients = new Set();
+let nextPhoneId = 1;   // 폰마다 번호를 붙여 1P/2P 를 구분
 
 function broadcastToDisplays(obj) {
   const msg = JSON.stringify(obj);
@@ -108,8 +109,8 @@ function broadcastToDisplays(obj) {
 }
 
 function sendStatus() {
-  const status = { type: 'status', phone: false };
-  for (const c of clients) if (c.role === 'phone') status.phone = true;
+  const phones = [...clients].filter((c) => c.role === 'phone').map((c) => c.pid);
+  const status = { type: 'status', phone: phones.length > 0, phones };
   broadcastToDisplays(status);
   // 폰에게도 시뮬레이터 연결 여부를 알려 줌
   const hasDisplay = [...clients].some((c) => c.role === 'display');
@@ -128,17 +129,20 @@ function attachWS(server) {
       try { m = JSON.parse(data); } catch { return; }
       if (m.type === 'hello') {
         ws.role = ['display', 'phone'].includes(m.role) ? m.role : null;
-        console.log(`[연결] ${ws.role}`);
+        if (ws.role === 'phone') ws.pid = String(nextPhoneId++);
+        console.log(`[연결] ${ws.role}${ws.pid ? ' #' + ws.pid : ''}`);
         sendStatus();
         return;
       }
       if (ws.role === 'phone') {
-        m.from = ws.role;
+        m.from = ws.pid;
         broadcastToDisplays(m);
       } else if (ws.role === 'display' && m.type === 'feedback') {
-        // 시뮬레이터 → 폰 (진동 등 피드백)
+        // 시뮬레이터 → 폰 (진동 등 피드백). to 가 있으면 그 폰에게만
+        const to = m.to;
+        delete m.to;
         const msg = JSON.stringify(m);
-        for (const c of clients) if (c.role === 'phone' && c.readyState === 1) c.send(msg);
+        for (const c of clients) if (c.role === 'phone' && c.readyState === 1 && (to == null || c.pid === String(to))) c.send(msg);
       }
     });
     ws.on('close', () => {

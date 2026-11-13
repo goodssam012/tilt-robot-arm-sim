@@ -39,11 +39,13 @@
   }
   #roomInput:focus { outline: none; border-color: var(--accent); }
   .mode-line { font-size: 12px; color: var(--muted); }
+  body.battle #recRow { display: none; }
+  #playerBadge { font-size: 13px; vertical-align: 3px; color: #fff; }
 </style>
 </head>
 <body>
 <header>
-  <h1>🦾 로봇팔 조종기</h1>
+  <h1>🦾 로봇팔 조종기 <span class="role" id="playerBadge" hidden></span></h1>
   <div class="status">
     <span><i class="dot" id="dServer"></i>서버</span>
     <span><i class="dot" id="dDisplay"></i>PC</span>
@@ -66,7 +68,7 @@
 </p>
 
 <div class="grow">
-  <div class="row3 small">
+  <div class="row3 small" id="recRow">
     <button id="btnRec">● 녹화</button>
     <button id="btnPlay">▶ 재생</button>
     <button id="btnLoop">🔁 반복</button>
@@ -162,6 +164,7 @@ const ctl = createController({
     if (m.text) toast(m.text);
     if (m.background) $('bgName').textContent = '배경 ' + m.background;
     if (m.rec) setRecMode(m.rec);
+    if (m.mode) setPlayer(m.mode, m.player);
     if (m.held === true) setGrip(true);              // 물건을 잡음 → 버튼은 '놓기'
     if (m.held === false || m.gripFail) setGrip(false);  // 놓았거나 잡을 물건이 없음 → '집기'
     if (typeof m.loop === 'boolean') $('btnLoop').classList.toggle('active', m.loop);
@@ -244,6 +247,23 @@ $('btnGrip').addEventListener('pointerdown', (e) => {
 $('btnGrip').addEventListener('contextmenu', (e) => e.preventDefault());
 
 const event = (name) => { ctl.send({ type: 'event', name }); buzz(20); };
+
+// 배틀 모드에서 1P / 2P 표시 (PC에서 알려 줌)
+function setPlayer(mode, player) {
+  document.body.classList.toggle('battle', mode === 'battle');
+  const b = $('playerBadge');
+  if (mode === 'battle' && (player === 1 || player === 2)) {
+    b.textContent = player === 1 ? '1P · 빨강' : '2P · 파랑';
+    b.style.background = player === 1 ? '#e8414f' : '#3a7bff';
+    b.hidden = false;
+  } else if (mode === 'battle' || player === 2 || player === 0) {
+    b.textContent = mode === 'battle' ? '관전 중' : '대기 (배틀 모드에서 2P)';
+    b.style.background = '#5b6878';
+    b.hidden = false;
+  } else {
+    b.hidden = true;
+  }
+}
 
 // 녹화·재생 상태 표시 (PC에서 알려 줌)
 function setRecMode(mode) {

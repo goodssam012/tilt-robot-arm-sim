@@ -91,6 +91,12 @@
   #banner.fail .big { color: var(--bad); }
   #banner.warn .big { color: var(--warn); }
   .hidden { display: none !important; }
+  body.battle #recPanel { display: none !important; }
+  #tasks li .pts { margin-left: auto; font-size: 18px; font-variant-numeric: tabular-nums; color: var(--text); }
+  #scoreBattle { font-variant-numeric: tabular-nums; }
+  #scoreBattle b { font-size: 17px; }
+  #scoreBattle[hidden], #scoreMission[hidden] { display: none; }
+  #connect .actions .battle-btn { background: linear-gradient(90deg, #ff5d6c, #5b95ff); color: #fff; border-color: transparent; font-weight: 700; }
   @media (max-width: 1100px) {
     #score { top: auto; bottom: 120px; }
     #help { display: none; }
@@ -110,10 +116,11 @@
   <span class="diff" id="diff">난이도 ★</span>
 </div>
 
-<div id="score" class="panel">점수 <b id="scoreVal">0</b></div>
+<div id="score" class="panel"><span id="scoreMission">점수 <b id="scoreVal">0</b></span><span id="scoreBattle" hidden></span></div>
 
 <div id="status" class="panel">
-  <span class="pill"><i class="dot" id="dPhone"></i>스마트폰 조종기</span>
+  <span class="pill"><i class="dot" id="dPhone"></i>스마트폰 조종기<b id="phoneCount"></b></span>
+  <button id="btnMode" title="단축키 B">⚔ 배틀 모드</button>
   <span class="pill" id="theme">배경: -</span>
   <button id="btnConnect">📱 연결 QR</button>
 </div>
@@ -146,6 +153,7 @@
   Space 누르기 집게 닫기 · G 집게 잠금<br>
   Q/E 배경 전환 · C 시점 · Backspace 다시하기<br>
   V 녹화 · P 재생 · L 반복 재생<br>
+  B 배틀/미션 전환 (배틀에서 키보드는 폰이 없는 쪽 조종)<br>
   N 다음 단계로 건너뛰기 · H 이 도움말 숨기기
 </div>
 
@@ -169,11 +177,13 @@
         <li><b>▲▼ 버튼 누르고 있기</b> → 팔꿈치</li>
         <li><b>집기 버튼</b> → 한 번 누르면 집기, 다시 누르면 놓기</li>
         <li><b>◀ ▶ 버튼</b> → 배경 전환 · <b>🎥</b> 시점 전환</li>
+        <li><b>⚔ 2인 배틀</b> → 폰 2대로 대결. 먼저 들어온 폰이 1P(빨강), 다음 폰이 2P(파랑)</li>
       </ul>
     </div>
   </div>
   <div class="actions">
-    <button class="btn primary" id="btnStart">시작하기</button>
+    <button class="btn primary" id="btnStart">🎯 미션 모드 시작</button>
+    <button class="btn battle-btn" id="btnBattle">⚔ 2인 배틀 모드</button>
   </div>
   <div class="note" id="ipNote"></div>
 </div>

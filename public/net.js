@@ -51,7 +51,9 @@ function newRoomCode() {
 }
 
 // ---------------- PC 화면 쪽 ----------------
-// onMessage(m): 폰이 보낸 메시지, onStatus({phone}), onInfo({mode, phoneUrl, qrSvg, code, ips, error})
+// onMessage(m, fromId): 폰이 보낸 메시지와 보낸 폰의 번호
+// onStatus({phones: [폰 번호...]}), onInfo({mode, phoneUrl, qrSvg, code, ips, error})
+// send(obj, toId): toId 가 있으면 그 폰에게만, 없으면 모든 폰에게
 export async function openDisplayLink({ onMessage, onStatus, onInfo }) {
   const info = await detectLocalServer();
   if (info) {
@@ -62,16 +64,16 @@ export async function openDisplayLink({ onMessage, onStatus, onInfo }) {
       ws.onmessage = (e) => {
         let m;
         try { m = JSON.parse(e.data); } catch { return; }
-        if (m.type === 'status') onStatus({ phone: !!m.phone });
-        else onMessage(m);
+        if (m.type === 'status') onStatus({ phones: (m.phones || []).map(String) });
+        else onMessage(m, m.from != null ? String(m.from) : '');
       };
-      ws.onclose = () => { onStatus({ phone: false }); setTimeout(connect, 1000); };
+      ws.onclose = () => { onStatus({ phones: [] }); setTimeout(connect, 1000); };
     };
     connect();
     onInfo({ mode: 'local', phoneUrl: info.phone, qrSvg: info.phoneQR, ips: info.ips || [] });
     return {
       mode: 'local',
-      send: (obj) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); },
+      send: (obj, to) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(to != null ? { ...obj, to } : obj)); },
     };
   }
 
@@ -82,7 +84,8 @@ export async function openDisplayLink({ onMessage, onStatus, onInfo }) {
     onInfo({ mode: 'web', error: '연결 도구를 불러오지 못했어요. 인터넷 연결을 확인하거나, PC에서 시작.bat 으로 실행해 주세요.' });
     return { mode: 'web', send: () => {} };
   }
-  const conns = new Set();
+  const conns = new Map();   // 폰 번호(peer id) → 연결
+  const phoneList = () => [...conns.keys()];
   const folder = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
   let code = null;
   try { code = normalizeRoom(localStorage.getItem(ROOM_KEY)); } catch { /* 무시 */ }
@@ -100,13 +103,14 @@ export async function openDisplayLink({ onMessage, onStatus, onInfo }) {
       onInfo({ mode: 'web', phoneUrl: url, qrSvg: qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true }), code });
     });
     peer.on('connection', (c) => {
-      const drop = () => { conns.delete(c); onStatus({ phone: conns.size > 0 }); };
+      const id = String(c.peer);
+      const drop = () => { if (conns.get(id) === c) conns.delete(id); onStatus({ phones: phoneList() }); };
       c.on('open', () => {
-        conns.add(c);
-        onStatus({ phone: true });
+        conns.set(id, c);
+        onStatus({ phones: phoneList() });
         c.send({ type: 'status', display: true });
       });
-      c.on('data', (m) => { if (m && typeof m === 'object' && m.type !== 'hello') onMessage(m); });
+      c.on('data', (m) => { if (m && typeof m === 'object' && m.type !== 'hello') onMessage(m, id); });
       c.on('close', drop);
       c.on('error', drop);
     });
@@ -127,7 +131,10 @@ export async function openDisplayLink({ onMessage, onStatus, onInfo }) {
   start();
   return {
     mode: 'web',
-    send: (obj) => conns.forEach((c) => { if (c.open) c.send(obj); }),
+    send: (obj, to) => {
+      if (to != null) { const c = conns.get(String(to)); if (c && c.open) c.send(obj); return; }
+      conns.forEach((c) => { if (c.open) c.send(obj); });
+    },
   };
 }
 

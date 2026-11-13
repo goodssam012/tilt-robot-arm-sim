@@ -80,8 +80,7 @@ const LIMITS = {
   shoulder: [-5 * DEG, 165 * DEG],
   elbow: [-160 * DEG, 35 * DEG],
 };
-const joint = { yaw: 0, shoulder: 85 * DEG, elbow: -95 * DEG };
-const HOME = { ...joint };
+const HOME = { yaw: 0, shoulder: 85 * DEG, elbow: -95 * DEG };   // 시작 자세
 
 // ---- 금속 재질 ----
 // 주변 환경을 반사하도록 환경맵을 만들어 금속 재질에만 적용
@@ -152,23 +151,26 @@ function hub(r, len) {
   return g;
 }
 // 링크 옆면의 장식 패널 + 발광 라인 (z = ±side)
-function sidePanels(parent, x, len, h, side) {
+function sidePanels(parent, x, len, h, side, glowMat = mat.glow) {
   for (const s of [-1, 1]) {
     const panel = rbox(len, h, 0.02, 0.008, mat.gun);
     panel.position.set(x, 0, s * side);
-    const line = mesh(new THREE.BoxGeometry(len * 0.82, 0.014, 0.006), mat.glow, false);
+    const line = mesh(new THREE.BoxGeometry(len * 0.82, 0.014, 0.006), glowMat, false);
     line.position.set(x, 0, s * (side + 0.011));
     parent.add(panel, line);
   }
 }
 
+// 로봇팔 한 대를 만들어 장면에 추가 (glowHex: 발광 라인 색, guideHex: 안내선 색)
+function buildArm(glowHex, guideHex) {
+const glow = new THREE.MeshStandardMaterial({ color: 0x0a2230, emissive: glowHex, emissiveIntensity: 2.4 });
 const armRoot = new THREE.Group();
 scene.add(armRoot);
 
 // 받침대
 const plinth = cyl(0.8, 0.84, 0.06, mat.gun);
 plinth.position.y = 0.03;
-const baseGlow = mesh(new THREE.TorusGeometry(0.76, 0.012, 8, 96), mat.glow, false);
+const baseGlow = mesh(new THREE.TorusGeometry(0.76, 0.012, 8, 96), glow, false);
 baseGlow.rotation.x = Math.PI / 2;
 baseGlow.position.y = 0.065;
 const housing = cyl(0.6, 0.66, 0.16, mat.alu);
@@ -190,7 +192,7 @@ const bearing = cyl(0.48, 0.48, 0.05, mat.gun);
 bearing.position.y = 0.26;
 const turret = cyl(0.36, 0.44, 0.34, mat.alu);
 turret.position.y = 0.45;
-const turretGlow = mesh(new THREE.TorusGeometry(0.416, 0.011, 8, 80), mat.glow, false);
+const turretGlow = mesh(new THREE.TorusGeometry(0.416, 0.011, 8, 80), glow, false);
 turretGlow.rotation.x = Math.PI / 2;
 turretGlow.position.y = 0.4;
 const turretCap = cyl(0.3, 0.36, 0.05, mat.gun);
@@ -212,7 +214,7 @@ yawG.add(shG);
 const upper = rbox(L1 - 0.22, 0.21, 0.2, 0.07, mat.alu);
 upper.position.x = L1 / 2;
 shG.add(upper);
-sidePanels(shG, L1 / 2, L1 * 0.62, 0.075, 0.101);
+sidePanels(shG, L1 / 2, L1 * 0.62, 0.075, 0.101, glow);
 const cable = mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
   new THREE.Vector3(0.05, 0.2, 0.07),
   new THREE.Vector3(L1 * 0.3, 0.15, 0.075),
@@ -237,7 +239,7 @@ motorRing.position.x = 0.46;
 const fore = rbox(L2 - 0.36, 0.15, 0.16, 0.055, mat.alu);
 fore.position.x = (L2 + 0.36) / 2;
 elG.add(motor, motorRing, fore);
-sidePanels(elG, (L2 + 0.4) / 2, (L2 - 0.4) * 0.8, 0.055, 0.081);
+sidePanels(elG, (L2 + 0.4) / 2, (L2 - 0.4) * 0.8, 0.055, 0.081, glow);
 
 // 손목 + 집게 (집게가 항상 바닥을 향하도록 손목은 자동 수평 유지)
 const wrG = new THREE.Group();
@@ -254,7 +256,7 @@ flange.position.x = 0.09;
 const palm = cyl(0.3, 0.3, 0.1, mat.gun, 56);
 palm.rotation.z = Math.PI / 2;
 palm.position.x = 0.155;
-const palmGlow = mesh(new THREE.TorusGeometry(0.302, 0.011, 8, 80), mat.glow, false);
+const palmGlow = mesh(new THREE.TorusGeometry(0.302, 0.011, 8, 80), glow, false);
 palmGlow.rotation.y = Math.PI / 2;
 palmGlow.position.x = 0.155;
 const railA = rbox(0.03, 0.86, 0.045, 0.012, mat.chrome);
@@ -289,14 +291,6 @@ const fingers = [0, 1, 2, 3].map((i) => {
   wrG.add(pivot);
   return { angle, pivot, finger };
 });
-const PAD_IN = 0.043;   // 손가락 중심 ~ 안쪽 고무 패드 면 거리
-// 손가락이 열리는 방향 (위에서 본 단위 벡터)
-function fingerDir(f) {
-  const a = wrG.getWorldPosition(new THREE.Vector3());
-  const b = wrG.localToWorld(new THREE.Vector3(0, -Math.sin(f.angle), Math.cos(f.angle)));
-  const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz) || 1;
-  return [dx / l, dz / l];
-}
 const grabPoint = new THREE.Object3D();
 grabPoint.position.x = GRAB;
 wrG.add(grabPoint);
@@ -306,12 +300,26 @@ wrG.add(tipPoint);
 
 // 집게 아래로 떨어지는 안내선 + 착지 표시
 const guideLine = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 1, 6),
-  new THREE.MeshBasicMaterial({ color: 0xff3344, transparent: true, opacity: 0.7 }));
+  new THREE.MeshBasicMaterial({ color: guideHex, transparent: true, opacity: 0.7 }));
 scene.add(guideLine);
 const guideDot = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.09, 24),
-  new THREE.MeshBasicMaterial({ color: 0xff3344, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+  new THREE.MeshBasicMaterial({ color: guideHex, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
 guideDot.rotation.x = -Math.PI / 2;
 scene.add(guideDot);
+return { armRoot, yawG, shG, elG, wrG, fingers, grabPoint, tipPoint, guideLine, guideDot, glow };
+}
+
+// 지금 처리 중인 로봇팔의 부품 (useArm 으로 바꿔 끼움)
+let armRoot, yawG, shG, elG, wrG, fingers, grabPoint, tipPoint, guideLine, guideDot;
+let joint, vel, gripWait, touch;
+const PAD_IN = 0.043;   // 손가락 중심 ~ 안쪽 고무 패드 면 거리
+// 손가락이 열리는 방향 (위에서 본 단위 벡터)
+function fingerDir(f) {
+  const a = wrG.getWorldPosition(new THREE.Vector3());
+  const b = wrG.localToWorld(new THREE.Vector3(0, -Math.sin(f.angle), Math.cos(f.angle)));
+  const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz) || 1;
+  return [dx / l, dz / l];
+}
 
 function applyJoints(j) {
   yawG.rotation.y = Math.PI / 2 + j.yaw;
@@ -340,7 +348,42 @@ const state = {
   camMode: 0,
   clock: 0,
   pendingTimer: 0,
+  mode: 'mission',   // mission | battle
 };
+
+// ---------------- 로봇팔 여러 대 (미션: 1대, 배틀: 2대) ----------------
+// 로봇팔마다 관절·속도·집게 상태를 따로 갖고, 처리할 때 useArm 으로 '지금 팔'을 바꿔 끼움
+let curArm = null;
+function makeArm(glowHex, guideHex) {
+  return {
+    ...buildArm(glowHex, guideHex),
+    joint: { ...HOME },
+    vel: { yaw: 0, shoulder: 0, elbow: 0 },
+    gripWait: { t: 0, failed: false },   // 폰 '집기' 후 잡기 대기 시간
+    touch: { prev: null, last: 0 },      // 접촉 진동 상태
+    held: null, grip: 0, gripVis: 0,
+    phoneId: null,                       // 조종하는 폰 번호
+    keyboard: true,                      // PC 키보드로도 조종하는지
+    spheres: null,                       // 충돌 검사용 (상대 팔이 참고)
+  };
+}
+function useArm(a) {
+  curArm = a;
+  ({ armRoot, yawG, shG, elG, wrG, fingers, grabPoint, tipPoint, guideLine, guideDot, joint, vel, gripWait, touch } = a);
+  state.held = a.held;
+  state.grip = a.grip;
+  state.gripVis = a.gripVis;
+}
+function saveArm(a) {
+  a.held = state.held;
+  a.grip = state.grip;
+  a.gripVis = state.gripVis;
+}
+const ARM_GLOW = { mission: 0x38d6ff, p1: 0xff4d5e, p2: 0x4d8bff };
+const arms = [makeArm(ARM_GLOW.mission, 0xff3344)];
+useArm(arms[0]);
+const activeArms = () => (state.mode === 'battle' ? arms : [arms[0]]);
+
 const missionGroup = new THREE.Group();
 scene.add(missionGroup);
 
@@ -561,6 +604,14 @@ function poseInvalid() {
     corners.push(_box.getCenter(new THREE.Vector3()));
     for (const ob of state.obstacles) for (const p of corners) if (inObstacle(p, ob, 0.0)) return true;
   }
+  // 배틀: 상대 로봇팔과 부딪힘
+  if (state.mode === 'battle') {
+    const mine = armSpheres();
+    for (const b of arms) {
+      if (b === curArm || !b.spheres) continue;
+      for (const [p, r] of mine) for (const [q, s2] of b.spheres) if (p.distanceToSquared(q) < (r + s2) * (r + s2)) return true;
+    }
+  }
   return false;
 }
 
@@ -743,7 +794,6 @@ const snapObjects = () => state.objects.map((o) => [o, o.mesh.position.x, o.mesh
 const restoreObjects = (snap) => snap.forEach(([o, x, z]) => { if (!o.held) { o.mesh.position.x = x; o.mesh.position.z = z; } });
 
 // 닿을 때 폰 진동 + 소리 (처음 닿는 순간 한 번, 계속 밀거나 누르면 짧게 반복)
-const touch = { prev: false, last: 0 };
 // kind: null(닿지 않음) | 'touch'(물건) | 'hit'(벽·고정된 물건) | 'floor'(바닥)
 const TOUCH_FX = {
   touch: { first: 90, again: 60, every: 300, tone: 240 },
@@ -777,37 +827,79 @@ function floorDepth() {
 
 // ---------------- 입력 ----------------
 const input = {
-  phone: { yaw: 0, shoulder: 0, elbow: 0, grip: 0, speed: 1, t: 0 },
+  phones: {},          // 폰 번호 → 최근 조종 값
   keys: new Set(),
   keyLock: false,
 };
+const IDLE_INPUT = { yaw: 0, shoulder: 0, elbow: 0, grip: 0, speed: 1 };
+const NO_KEYS = new Set();
 const conn = { phone: false };
+let phoneIds = [];                 // 연결된 폰 번호들
+const players = [null, null];      // 1P, 2P 를 맡은 폰 번호 (먼저 들어온 폰이 1P)
 
 let link = null;   // 폰 연결 (로컬 Wi‑Fi 또는 인터넷 직접 연결)
+function sendFeedback(data, to) {
+  if (link) link.send({ type: 'feedback', ...data }, to);
+}
+const feedbackAll = (data) => sendFeedback(data);
+// 지금 처리 중인 로봇팔을 조종하는 사람에게 (미션 모드는 모든 폰)
 function feedback(data) {
-  if (link) link.send({ type: 'feedback', ...data });
+  if (state.mode !== 'battle') { sendFeedback(data); return; }
+  if (curArm && curArm.phoneId != null) sendFeedback(data, curArm.phoneId);
 }
 
-function onPhoneStatus({ phone }) {
-  conn.phone = phone;
-  $('dPhone').classList.toggle('on', phone);
-  $('qPhone').classList.toggle('on', phone);
-  if (phone) feedback({ background: THEMES[state.themeIndex].name, rec: rec.mode, loop: rec.loop });
+// 폰마다 역할 알려 주기 (1P / 2P / 대기)
+function announcePlayers() {
+  for (const id of phoneIds) {
+    sendFeedback({
+      mode: state.mode, player: players.indexOf(id) + 1,
+      background: THEMES[state.themeIndex].name, rec: rec.mode, loop: rec.loop,
+    }, id);
+  }
+}
+// 1P·2P 폰을 로봇팔에 연결 (폰이 없는 팔은 PC 키보드로 조종)
+function assignArms() {
+  arms[0].phoneId = players[0];
+  if (state.mode === 'battle' && arms[1]) {
+    arms[1].phoneId = players[1];
+    arms[1].keyboard = players[1] == null;
+    arms[0].keyboard = players[0] == null && players[1] != null;
+  } else {
+    arms[0].keyboard = true;
+  }
+  updateBattleHud();
+}
+
+function onPhoneStatus({ phones }) {
+  phoneIds = (phones || []).map(String);
+  for (let i = 0; i < 2; i++) if (players[i] != null && !phoneIds.includes(players[i])) players[i] = null;
+  for (const id of phoneIds) {
+    if (players.includes(id)) continue;
+    const slot = players.indexOf(null);
+    if (slot >= 0) players[slot] = id;
+  }
+  for (const id of Object.keys(input.phones)) if (!phoneIds.includes(id)) delete input.phones[id];
+  const any = phoneIds.length > 0;
+  conn.phone = any;
+  $('dPhone').classList.toggle('on', any);
+  $('qPhone').classList.toggle('on', any);
+  $('phoneCount').textContent = phoneIds.length > 1 ? ` ×${phoneIds.length}` : '';
+  assignArms();
+  announcePlayers();
   // 폰이 연결되면 자동으로 시작
-  if (phone && state.phase === 'intro') setTimeout(startFromIntro, 1200);
+  if (any && state.phase === 'intro') setTimeout(startFromIntro, 1200);
 }
 
-function onPhoneMessage(m) {
-  {
-    const now = performance.now();
-    if (m.type === 'ctrl') {
-      Object.assign(input.phone, {
-        yaw: +m.yaw || 0, shoulder: +m.shoulder || 0, elbow: +m.elbow || 0,
-        grip: Math.max(0, Math.min(1, +m.grip || 0)), speed: +m.speed || 1, t: now,
-      });
-    } else if (m.type === 'event') {
-      handleEvent(m.name);
-    }
+function onPhoneMessage(m, from) {
+  const id = String(from ?? '');
+  const now = performance.now();
+  if (m.type === 'ctrl') {
+    input.phones[id] = {
+      yaw: +m.yaw || 0, shoulder: +m.shoulder || 0, elbow: +m.elbow || 0,
+      grip: Math.max(0, Math.min(1, +m.grip || 0)), speed: +m.speed || 1, t: now,
+    };
+  } else if (m.type === 'event') {
+    handleEvent(m.name);
   }
 }
 
@@ -830,6 +922,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyG') input.keyLock = !input.keyLock;
   if (e.code === 'Backspace') restartMission();
   if (e.code === 'KeyN') nextMission(true);
+  if (e.code === 'KeyB') toggleMode();
   if (e.code === 'KeyH') $('help').classList.toggle('hidden');
   if (e.code === 'KeyV') recToggle();
   if (e.code === 'KeyP') playToggle();
@@ -844,32 +937,40 @@ function setTheme(i) {
   state.themeIndex = (i + THEMES.length) % THEMES.length;
   const name = applyTheme(themeCtx, state.themeIndex);
   $('theme').textContent = `배경: ${name}  (${state.themeIndex + 1}/${THEMES.length})`;
-  feedback({ background: name });
+  feedbackAll({ background: name });
   if (state.phase === 'play') showBanner(name, '배경 전환', '', 1100);
 }
 
 const CAMS = ['기본', '위에서', '옆에서', '집게 따라가기'];
+const CAMS_BATTLE = ['전체', '위에서', '1P 따라가기', '2P 따라가기'];
 function setCam(i) {
   state.camMode = (i + CAMS.length) % CAMS.length;
-  $('jCam').textContent = CAMS[state.camMode];
+  $('jCam').textContent = (state.mode === 'battle' ? CAMS_BATTLE : CAMS)[state.camMode];
 }
 const camTarget = new THREE.Vector3(0, 0.5, -1);
 const camLook = new THREE.Vector3(0, 0.5, -1);
 function updateCamera(dt) {
   if (state.camFreeze) return;   // 디버그: 카메라 고정
-  const tip = tipPoint.getWorldPosition(new THREE.Vector3());
   const want = new THREE.Vector3();
   const look = new THREE.Vector3();
-  if (state.camMode === 0) { want.set(0, 5.2, 5.6); look.set(0, 0.2, -0.9); }
-  else if (state.camMode === 1) { want.set(0, 9.5, 0.6); look.set(0, 0, 0); }
-  else if (state.camMode === 2) { want.set(6.8, 3.6, -0.4); look.set(0, 0.6, -0.6); }
-  else {
-    const d = new THREE.Vector3(tip.x, 0, tip.z);
+  // 집게 따라가기: 팔 뿌리 → 집게 방향의 뒤쪽 위에서 바라봄
+  const follow = (a) => {
+    const tip = a.tipPoint.getWorldPosition(new THREE.Vector3());
+    const d = tip.clone().sub(a.armRoot.position);
+    d.y = 0;
     if (d.lengthSq() < 0.01) d.set(0, 0, -1);
     d.normalize();
     want.copy(tip).addScaledVector(d, -1.6).add(new THREE.Vector3(0, 1.8, 0));
     look.copy(tip);
-  }
+  };
+  if (state.mode === 'battle') {
+    if (state.camMode === 0) { want.set(0, 6.6, 6.2); look.set(0, 0, -0.3); }
+    else if (state.camMode === 1) { want.set(0, 10, 0.8); look.set(0, 0, 0); }
+    else follow(arms[state.camMode === 2 ? 0 : 1]);
+  } else if (state.camMode === 0) { want.set(0, 5.2, 5.6); look.set(0, 0.2, -0.9); }
+  else if (state.camMode === 1) { want.set(0, 9.5, 0.6); look.set(0, 0, 0); }
+  else if (state.camMode === 2) { want.set(6.8, 3.6, -0.4); look.set(0, 0.6, -0.6); }
+  else follow(arms[0]);
   const k = 1 - Math.exp(-dt * 4);
   camera.position.lerp(want, k);
   camLook.lerp(look, k);
@@ -932,6 +1033,7 @@ function startMission() {
 
 function restartMission() {
   if (state.phase === 'intro') return;
+  if (state.mode === 'battle') { startBattle(); return; }
   playStop(true);
   recStop();
   loadMission(state.level);
@@ -939,7 +1041,7 @@ function restartMission() {
 }
 
 function nextMission(skip = false) {
-  if (state.phase === 'intro') return;
+  if (state.phase === 'intro' || state.mode === 'battle') return;
   playStop(true);
   recStop();
   state.level += 1;
@@ -1206,15 +1308,16 @@ function playbackPose(d, t) {
   };
 }
 
-const recToggle = () => (rec.mode === 'rec' ? recStop() : recStart());
-const playToggle = () => (rec.mode === 'play' ? playStop() : playStart());
+const recToggle = () => { if (state.mode === 'battle') return; if (rec.mode === 'rec') recStop(); else recStart(); };
+const playToggle = () => { if (state.mode === 'battle') return; if (rec.mode === 'play') playStop(); else playStart(); };
 function setSpeed() {
   rec.speed = SPEEDS[(SPEEDS.indexOf(rec.speed) + 1) % SPEEDS.length];
   updateRecUI();
 }
 function toggleLoop() {
+  if (state.mode === 'battle') return;
   rec.loop = !rec.loop;
-  feedback({ loop: rec.loop, text: rec.loop ? '🔁 반복 재생 켬' : '반복 재생 끔' });
+  feedbackAll({ loop: rec.loop, text: rec.loop ? '🔁 반복 재생 켬' : '반복 재생 끔' });
   updateRecUI();
 }
 
@@ -1282,10 +1385,294 @@ $('btnSave').onclick = (e) => { recDownload(); e.currentTarget.blur(); };
 $('btnLoad').onclick = (e) => { $('fileLoad').click(); e.currentTarget.blur(); };
 $('fileLoad').onchange = (e) => { if (e.target.files[0]) recLoadFile(e.target.files[0]); e.target.value = ''; };
 
+// ---------------- 배틀 모드 (2인 쟁탈전) ----------------
+// 로봇팔 2대가 마주 보고, 가운데 물건을 집어 '내 구역'에 내려놓으면 점수.
+// 상자 1점 · 원기둥 2점 · 공 3점 · 황금 상자 5점. 90초 뒤 점수가 높은 쪽이 승리.
+const BATTLE_TIME = 90;
+const BATTLE_ARM_X = 2.0;                              // 두 팔 사이 거리의 절반
+const BATTLE_HOME = { yaw: 0, shoulder: 100 * DEG, elbow: -115 * DEG };   // 배틀 시작 자세 (두 집게가 서로 떨어져 있도록 팔을 접음)
+const BATTLE_ZONES = [[-2.0, 1.9], [2.0, 1.9]];       // 1P, 2P 구역: 각 팔의 앞쪽(화면 가까이), 상대 팔은 닿지 않는 위치
+const BATTLE_ZONE_R = 0.58;
+// 가운데 더미: 육각형 7자리 (벌린 집게가 이웃 물건에 걸리지 않도록 약 70cm 간격)
+const PILE_CENTER = [0, 0.2];
+const PILE_SPOTS = [PILE_CENTER];
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2;
+  PILE_SPOTS.push([PILE_CENTER[0] + Math.cos(a) * 0.72, PILE_CENTER[1] + Math.sin(a) * 0.72]);
+}
+const POINTS = { box: 1, cyl: 2, ball: 3 };
+const SHAPE_COLOR = { box: 0xf5c542, cyl: 0x34c96b, ball: 0xa25bff };
+const PLAYER = [
+  { name: '1P', color: '빨강', hex: 0xe8414f, css: '#ff5d6c' },
+  { name: '2P', color: '파랑', hex: 0x3a7bff, css: '#5b95ff' },
+];
+const battle = { t: 0, scores: [0, 0], count: 0, lastCount: 0, goldTimer: 0, nextId: 0 };
+
+// 모든 팔이 들고 있던 물건을 내려놓은 상태로 정리
+function clearHeldAll() {
+  for (const a of arms) {
+    if (a.held) { missionGroup.attach(a.held.mesh); a.held.held = false; a.held = null; }
+    a.grip = a.gripVis = 0;
+  }
+  state.held = null;
+  state.grip = state.gripVis = 0;
+}
+
+// 모드에 맞게 로봇팔 배치 (미션: 가운데 1대, 배틀: 양쪽에서 마주 보는 2대)
+function placeArms() {
+  if (state.mode === 'battle') {
+    arms[0].armRoot.position.set(-BATTLE_ARM_X, 0, 0.3);
+    arms[0].armRoot.rotation.y = -Math.PI / 2;
+    arms[1].armRoot.position.set(BATTLE_ARM_X, 0, 0.3);
+    arms[1].armRoot.rotation.y = Math.PI / 2;
+    arms[0].glow.emissive.setHex(ARM_GLOW.p1);
+    arms[1].glow.emissive.setHex(ARM_GLOW.p2);
+    arms[1].armRoot.visible = arms[1].guideLine.visible = arms[1].guideDot.visible = true;
+  } else {
+    arms[0].armRoot.position.set(0, 0, 0);
+    arms[0].armRoot.rotation.y = 0;
+    arms[0].glow.emissive.setHex(ARM_GLOW.mission);
+    if (arms[1]) arms[1].armRoot.visible = arms[1].guideLine.visible = arms[1].guideDot.visible = false;
+  }
+  for (const a of arms) {
+    useArm(a);
+    Object.assign(joint, state.mode === 'battle' ? BATTLE_HOME : HOME);
+    vel.yaw = vel.shoulder = vel.elbow = 0;
+    gripWait.t = 0; gripWait.failed = false;
+    applyJoints(joint);
+    a.spheres = null;
+    saveArm(a);
+  }
+  useArm(arms[0]);
+}
+
+function spawnBattleObject(x, z, shape, gold = false, drop = 0) {
+  let geo, hx, hy, hz;
+  if (shape === 'box') { geo = new THREE.BoxGeometry(0.36, 0.36, 0.36); hx = hy = hz = 0.18; }
+  else if (shape === 'cyl') { geo = new THREE.CylinderGeometry(0.16, 0.16, 0.44, 28); hx = hz = 0.16; hy = 0.22; }
+  else { geo = new THREE.SphereGeometry(0.19, 28, 20); hx = hy = hz = 0.19; }
+  const m = gold
+    ? metal({ color: 0xffc531, roughness: 0.22, emissive: 0x5a3d00, emissiveIntensity: 0.7 })
+    : new THREE.MeshStandardMaterial({ color: SHAPE_COLOR[shape], roughness: 0.45, metalness: 0.1 });
+  const ms = mesh(geo, m);
+  ms.position.set(x, hy + drop, z);
+  ms.rotation.y = Math.random() * Math.PI;
+  missionGroup.add(ms);
+  const o = {
+    id: 'b' + battle.nextId++, label: '', color: 'yellow', shape, rad: shape === 'box' ? hx * 1.12 : hx,
+    mesh: ms, hx, hy, hz, held: false, resting: drop === 0, vy: 0, locked: false,
+    points: gold ? 5 : POINTS[shape], gold,
+  };
+  state.objects.push(o);
+  return o;
+}
+
+// 가운데 더미에서 비어 있는 자리
+function freePileSpot() {
+  for (let i = 0; i < 30; i++) {
+    const a = Math.random() * Math.PI * 2, r = Math.random() * 0.8;
+    const x = PILE_CENTER[0] + Math.cos(a) * r, z = PILE_CENTER[1] + Math.sin(a) * r;
+    if (state.objects.every((o) => o.held || Math.hypot(o.mesh.position.x - x, o.mesh.position.z - z) > 0.68)) return [x, z];
+  }
+  return null;
+}
+
+function startBattle() {
+  clearTimeout(state.pendingTimer);
+  clearHeldAll();
+  disposeGroup(missionGroup);
+  state.objects = [];
+  state.zones = [];
+  state.obstacles = [];
+  state.tasks = [];
+  BATTLE_ZONES.forEach(([x, z], p) => {
+    const g = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(BATTLE_ZONE_R, 48),
+      new THREE.MeshStandardMaterial({ color: PLAYER[p].hex, transparent: true, opacity: 0.45, roughness: 0.6 }));
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.y = 0.012;
+    disc.receiveShadow = true;
+    const ring = new THREE.Mesh(new THREE.RingGeometry(BATTLE_ZONE_R - 0.05, BATTLE_ZONE_R, 48),
+      new THREE.MeshBasicMaterial({ color: PLAYER[p].hex, side: THREE.DoubleSide, transparent: true }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.016;
+    const label = makeLabel(`${PLAYER[p].name} 구역`, PLAYER[p].hex);
+    label.position.y = 0.75;
+    g.add(disc, ring, label);
+    g.position.set(x, 0, z);
+    missionGroup.add(g);
+    state.zones.push({ id: 'p' + p, group: g, ring, r: BATTLE_ZONE_R, height: 0, move: null, pos: [x, z], player: p });
+  });
+  const shapes = ['box', 'box', 'box', 'cyl', 'cyl', 'ball', 'ball'].sort(() => Math.random() - 0.5);
+  PILE_SPOTS.forEach(([x, z], i) => spawnBattleObject(x + (Math.random() - 0.5) * 0.06, z + (Math.random() - 0.5) * 0.06, shapes[i]));
+  battle.scores = [0, 0];
+  battle.t = BATTLE_TIME;
+  battle.count = 3.99;
+  battle.lastCount = 4;
+  battle.goldTimer = 15;
+  state.phase = 'countdown';
+  placeArms();
+  updateBattleHud();
+  updateBattleTimer();
+}
+
+function enterBattle() {
+  if (state.mode === 'battle') { startBattle(); return; }
+  playStop(true);
+  recStop();
+  state.mode = 'battle';
+  if (!arms[1]) arms.push(makeArm(ARM_GLOW.p2, 0x4d8bff));
+  $('connect').classList.add('hidden');
+  document.body.classList.add('battle');
+  $('scoreMission').hidden = true;
+  $('scoreBattle').hidden = false;
+  $('btnMode').textContent = '🎯 미션 모드';
+  assignArms();
+  startBattle();
+  setCam(0);
+  announcePlayers();
+}
+
+function enterMission() {
+  if (state.mode === 'mission') return;
+  clearHeldAll();
+  state.mode = 'mission';
+  document.body.classList.remove('battle');
+  $('scoreMission').hidden = false;
+  $('scoreBattle').hidden = true;
+  $('btnMode').textContent = '⚔ 배틀 모드';
+  $('diff').textContent = '';
+  assignArms();
+  placeArms();
+  loadMission(state.level);
+  startMission();
+  setCam(0);
+  announcePlayers();
+}
+const toggleMode = () => (state.mode === 'battle' ? enterMission() : enterBattle());
+
+// 물건이 어느 쪽 구역에 내려앉았는지 → 점수
+function battleLanded(o) {
+  if (o.dead) return;
+  const p = o.mesh.position;
+  for (const z of state.zones) {
+    if (Math.hypot(p.x - z.pos[0], p.z - z.pos[1]) <= z.r - 0.02 && p.y - o.hy < 0.06) {
+      o.dead = true;
+      battle.scores[z.player] += o.points;
+      burst(p.clone().add(new THREE.Vector3(0, o.hy, 0)), PLAYER[z.player].hex);
+      chord(o.gold ? [784, 988, 1175] : [660, 880]);
+      const id = players[z.player];
+      if (id != null) sendFeedback({ vibrate: [60, 40, 60], text: `+${o.points}점!${o.gold ? ' 황금!' : ''}` }, id);
+      updateBattleHud();
+      return;
+    }
+  }
+}
+
+// 점수가 난 물건과 판 밖으로 멀리 밀려난 물건 치우기
+function battleCleanup() {
+  const gone = state.objects.filter((o) => o.dead || (!o.held && Math.hypot(o.mesh.position.x, o.mesh.position.z) > 3.9));
+  if (!gone.length) return;
+  for (const o of gone) {
+    missionGroup.remove(o.mesh);
+    o.mesh.geometry.dispose();
+    o.mesh.material.dispose();
+  }
+  state.objects = state.objects.filter((o) => !gone.includes(o));
+}
+
+function battleTick(dt) {
+  if (state.phase === 'countdown') {
+    battle.count -= dt;
+    const n = Math.ceil(battle.count);
+    if (n !== battle.lastCount) {
+      battle.lastCount = n;
+      if (n > 0) {
+        showBanner(String(n), '2인 쟁탈전 · 가운데 물건을 내 구역으로!', 'warn', 900);
+        beep(520, 0.12);
+      } else {
+        state.phase = 'battle';
+        showBanner('시작!', '물건을 집어 내 구역에 내려놓으세요', 'success', 1200);
+        chord([660, 880]);
+        feedbackAll({ vibrate: 200, text: '시작!' });
+      }
+    }
+  } else if (state.phase === 'battle') {
+    battle.t -= dt;
+    // 20초마다 황금 상자
+    battle.goldTimer -= dt;
+    if (battle.goldTimer <= 0) {
+      battle.goldTimer = 20;
+      const spot = !state.objects.some((o) => o.gold) && freePileSpot();
+      if (spot) {
+        spawnBattleObject(spot[0], spot[1], 'box', true, 1.4);
+        showBanner('황금 상자!', '가운데에 5점짜리 황금 상자가 떨어졌어요', 'warn', 1500);
+        beep(1046, 0.2, 'triangle');
+      }
+    }
+    // 가운데 물건이 줄면 위에서 떨어뜨려 보충
+    if (state.objects.filter((o) => !o.dead && !o.held).length < 3) {
+      for (let i = 0; i < 3; i++) {
+        const spot = freePileSpot();
+        if (!spot) break;
+        spawnBattleObject(spot[0], spot[1], ['box', 'box', 'cyl', 'ball'][Math.floor(Math.random() * 4)], false, 1.2);
+      }
+    }
+    if (battle.t <= 0) { battle.t = 0; endBattle(); }
+  }
+  updateBattleTimer();
+}
+
+function endBattle() {
+  state.phase = 'over';
+  for (const a of arms) { useArm(a); if (state.held) releaseHeld(); saveArm(a); }
+  useArm(arms[0]);
+  const [s1, s2] = battle.scores;
+  const w = s1 === s2 ? -1 : s1 > s2 ? 0 : 1;
+  chord([523, 659, 784, 1046]);
+  showBanner(w < 0 ? '무승부!' : `${PLAYER[w].name} 승리!`, `${s1} : ${s2} · ↺ 다시(Backspace)를 누르면 재대결`, w < 0 ? 'warn' : 'success', 8000);
+  players.forEach((id, p) => {
+    if (id == null) return;
+    const win = w === p;
+    sendFeedback({ vibrate: win ? [100, 60, 100, 60, 250] : 400, text: w < 0 ? '무승부!' : win ? '🏆 승리!' : '아쉽게 졌어요' }, id);
+  });
+  updateBattleHud();
+}
+
+function updateBattleHud() {
+  if (state.mode !== 'battle') return;
+  $('stageNo').textContent = 'BATTLE';
+  $('mTitle').textContent = '2인 쟁탈전';
+  $('mDesc').textContent = '가운데 물건을 집어 내 구역에 내려놓으세요. 상자 1점 · 원기둥 2점 · 공 3점 · 황금 상자 5점. 상대 팔을 막거나 물건을 밀어낼 수도 있어요.';
+  $('diff').textContent = '⚔ 대결 모드 · B 키로 미션 모드';
+  const ul = $('tasks');
+  ul.innerHTML = '';
+  PLAYER.forEach((pl, p) => {
+    const li = document.createElement('li');
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.background = pl.css;
+    const who = players[p] != null ? '폰' : arms[p] && arms[p].keyboard ? 'PC 키보드' : '폰 대기 중';
+    li.append(chip, document.createTextNode(`${pl.name} ${pl.color} · ${who}`));
+    const b = document.createElement('b');
+    b.className = 'pts';
+    b.textContent = `${battle.scores[p]}점`;
+    li.appendChild(b);
+    ul.appendChild(li);
+  });
+  $('scoreBattle').innerHTML = `<b style="color:${PLAYER[0].css}">1P ${battle.scores[0]}</b> : <b style="color:${PLAYER[1].css}">${battle.scores[1]} 2P</b>`;
+}
+
+function updateBattleTimer() {
+  const el = $('timer');
+  if (state.phase === 'countdown') { el.textContent = '준비'; el.classList.remove('low'); return; }
+  const s = Math.max(0, Math.ceil(battle.t));
+  el.textContent = state.phase === 'over' ? '경기 종료' : `⏱ ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  el.classList.toggle('low', s <= 10 && state.phase === 'battle');
+}
+
 // ---------------- 메인 루프 ----------------
 const RATE = { yaw: 75 * DEG, shoulder: 48 * DEG, elbow: 65 * DEG };
-const vel = { yaw: 0, shoulder: 0, elbow: 0 };
-const gripWait = { t: 0, failed: false };   // 폰 '집기' 후 잡기 대기 시간
 let last = performance.now();
 
 function frame(now) {
@@ -1293,22 +1680,21 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-function tick(now) {
-  let dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
-  last = Math.max(last, now);
-  if (rec.mode === 'play') dt *= rec.speed;   // 재생 속도에 맞춰 시간 전체를 빠르게/느리게
-  state.clock += dt;
-
+// 로봇팔 한 대의 한 프레임: 입력 → 관절 이동(충돌 검사) → 집게 → 접촉 진동 → 녹화
+function armStep(a, dt, now) {
   // 입력 합치기 (폰 신호가 0.5초 이상 끊기면 정지)
-  const L = now - input.phone.t < 500 ? input.phone : { yaw: 0, shoulder: 0, elbow: 0, grip: 0, speed: 1 };
-  const k = input.keys;
+  const src = a.phoneId != null ? input.phones[a.phoneId] : null;
+  const L = src && now - src.t < 500 ? src : IDLE_INPUT;
+  const k = a.keyboard ? input.keys : NO_KEYS;
+  const keyLock = a.keyboard && input.keyLock;
   const key = (a, b) => (k.has(a) ? 1 : 0) - (k.has(b) ? 1 : 0);
   const target = {
     yaw: -(L.yaw + key('KeyD', 'KeyA')) * L.speed,           // 오른쪽 기울임 → 오른쪽 회전
     shoulder: -(L.shoulder + key('KeyW', 'KeyS')) * L.speed, // 앞으로 숙임 → 팔이 앞/아래로
     elbow: -(L.elbow + key('KeyF', 'KeyR')) * L.speed,       // 앞으로 숙임 → 팔뚝이 아래로
   };
-  const playing = state.phase === 'play' || state.phase === 'success';
+  const playing = state.phase === 'play' || state.phase === 'success' || state.phase === 'battle';
+  const replay = rec.mode === 'play' && a === arms[0];
   const sm = 1 - Math.exp(-dt * 10);
   for (const j of ['yaw', 'shoulder', 'elbow']) {
     vel[j] += ((playing ? Math.max(-1.6, Math.min(1.6, target[j])) : 0) - vel[j]) * sm;
@@ -1316,7 +1702,7 @@ function tick(now) {
 
   // 관절을 하나씩 움직여 보고, 부딪히면 그 관절만 되돌림 (벽을 따라 미끄러지듯)
   let touched = false, hitHard = false, floorHit = false;
-  if (rec.mode === 'play') {
+  if (replay) {
     // 재생: 기록된 관절 각도와 집게 상태를 그대로 적용 (조종 입력은 무시)
     rec.t += dt;
     const pose = playbackPose(rec.data, rec.t);
@@ -1362,7 +1748,7 @@ function tick(now) {
       gripWait.failed = false;
     }
     if (gripWait.failed && !state.held) phoneGrip = 0;
-    state.grip = playing ? Math.max(phoneGrip, k.has('Space') ? 1 : 0, input.keyLock ? 1 : 0) : 0;
+    state.grip = playing ? Math.max(phoneGrip, k.has('Space') ? 1 : 0, keyLock ? 1 : 0) : 0;
   }
 
   // 집게
@@ -1397,18 +1783,19 @@ function tick(now) {
   // 손가락이 닫히거나 재생 중 팔이 움직이며 닿은 물건 밀기 + 접촉 진동
   const cc = resolveContacts(true);
   if (cc.contact) touched = true;
-  const armActive = rec.mode === 'play' || ['yaw', 'shoulder', 'elbow'].some((j) => Math.abs(vel[j]) > 0.05) || cc.moved;
+  const armActive = replay || ['yaw', 'shoulder', 'elbow'].some((j) => Math.abs(vel[j]) > 0.05) || cc.moved;
   // 진동 종류: 바닥 > 벽·고정된 물건 > 물건 (손끝이 바닥에 1cm 이내로 닿아 있어도 '바닥'으로 봄)
-  if (!floorHit && rec.mode !== 'play' && floorDepth() > -0.01 && tipPoint.getWorldPosition(new THREE.Vector3()).y < 0.05) floorHit = armActive;
+  if (!floorHit && !replay && floorDepth() > -0.01 && tipPoint.getWorldPosition(new THREE.Vector3()).y < 0.05) floorHit = armActive;
   const kind = floorHit ? 'floor' : hitHard ? 'hit' : touched ? 'touch' : null;
   contactFeedback(kind, armActive || floorHit || hitHard, performance.now());
 
   // 녹화 / 재생 진행
+  if (a !== arms[0] || state.mode !== 'mission') return;
   if (rec.mode === 'rec' && state.phase === 'play') {
     rec.t += dt;
     recSample();
     trailPush(tipPoint.getWorldPosition(new THREE.Vector3()));
-  } else if (rec.mode === 'play') {
+  } else if (replay) {
     trailPush(tipPoint.getWorldPosition(new THREE.Vector3()));
     if (rec.t >= recDuration(rec.data)) {
       rec.endHold += dt;            // 마지막 물건이 떨어져 판정될 시간을 잠깐 줌
@@ -1418,6 +1805,19 @@ function tick(now) {
       }
     }
   }
+}
+
+function tick(now) {
+  let dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
+  last = Math.max(last, now);
+  if (rec.mode === 'play') dt *= rec.speed;   // 재생 속도에 맞춰 시간 전체를 빠르게/느리게
+  state.clock += dt;
+
+  // 로봇팔마다: 조종 → 충돌 → 집게 (배틀에서는 2대, 서로의 위치를 참고해 부딪힘 검사)
+  const list = activeArms();
+  for (const a of list) { useArm(a); a.spheres = armSpheres(); saveArm(a); }
+  for (const a of list) { useArm(a); armStep(a, dt, now); a.spheres = armSpheres(); saveArm(a); }
+  useArm(arms[0]);
   if (rec.mode !== 'idle') updateRecStatus();
 
   // 물건 낙하 / 착지
@@ -1438,8 +1838,10 @@ function tick(now) {
       o.resting = true;
       if (hard) beep(160, 0.06, 'triangle', 0.08);
       if (state.phase === 'play') onLanded(o, sup);
+      else if (state.phase === 'battle') battleLanded(o);
     }
   }
+  if (state.mode === 'battle') battleCleanup();
 
   // 움직이는 구역
   for (const z of state.zones) {
@@ -1452,15 +1854,20 @@ function tick(now) {
   // 목표 구역 테두리 깜빡임
   for (const z of state.zones) z.ring.material.opacity = 0.6 + Math.sin(state.clock * 4) * 0.4;
 
-  // 안내선
-  const gp = grabPoint.getWorldPosition(new THREE.Vector3());
-  const tip = tipPoint.getWorldPosition(new THREE.Vector3());
-  const top = state.held ? objBox(state.held, _box).min.y : tip.y;
-  const sup = supportBelow(gp.x, gp.z, top, state.held);
-  const len = Math.max(0.001, top - sup.y);
-  guideLine.scale.y = len;
-  guideLine.position.set(gp.x, sup.y + len / 2, gp.z);
-  guideDot.position.set(gp.x, sup.y + 0.02, gp.z);
+  // 안내선 (팔마다)
+  for (const a of list) {
+    useArm(a);
+    const gp = grabPoint.getWorldPosition(new THREE.Vector3());
+    const tip = tipPoint.getWorldPosition(new THREE.Vector3());
+    const top = state.held ? objBox(state.held, _box).min.y : tip.y;
+    const sup = supportBelow(gp.x, gp.z, top, state.held);
+    const len = Math.max(0.001, top - sup.y);
+    guideLine.scale.y = len;
+    guideLine.position.set(gp.x, sup.y + len / 2, gp.z);
+    guideDot.position.set(gp.x, sup.y + 0.02, gp.z);
+    saveArm(a);
+  }
+  useArm(arms[0]);
 
   // 시간
   if (state.phase === 'play' && state.mission.time && rec.mode !== 'play') {
@@ -1468,6 +1875,7 @@ function tick(now) {
     if (state.timeLeft <= 0) { state.timeLeft = 0; missionFail(); }
     updateTimer();
   }
+  if (state.mode === 'battle') battleTick(dt);
 
   // 효과
   for (let i = sparks.length - 1; i >= 0; i--) {
@@ -1485,7 +1893,7 @@ function tick(now) {
   $('jSh').textContent = `${(joint.shoulder / DEG).toFixed(0)}°`;
   $('jEl').textContent = `${(joint.elbow / DEG).toFixed(0)}°`;
   $('jGrip').textContent = `${Math.round(state.grip * 100)}%${state.held ? ' · 잡는 중' : ''}`;
-  $('scoreVal').textContent = state.score;
+  if (state.mode === 'mission') $('scoreVal').textContent = state.score;
 
   updateCamera(dt);
   renderer.render(scene, camera);
@@ -1524,7 +1932,9 @@ function startFromIntro() {
   $('connect').classList.add('hidden');
   if (state.phase === 'intro') { beep(660, 0.1); startMission(); }
 }
-$('btnStart').onclick = () => { startFromIntro(); document.activeElement.blur(); };
+$('btnStart').onclick = () => { if (state.mode === 'battle') enterMission(); startFromIntro(); document.activeElement.blur(); };
+$('btnBattle').onclick = () => { beep(660, 0.1); enterBattle(); document.activeElement.blur(); };
+$('btnMode').onclick = () => { toggleMode(); document.activeElement.blur(); };
 $('btnConnect').onclick = () => { $('connect').classList.toggle('hidden'); document.activeElement.blur(); };
 
 setTheme(0);
@@ -1535,4 +1945,9 @@ updateRecUI();
 requestAnimationFrame(frame);
 
 // 디버그용 (브라우저 콘솔에서 상태 확인)
-window.__sim = { state, joint, input, tipPoint, grabPoint, tick, camera, rec, fingers, fingerDir, fingerContactDist, worldYaw, wrG };
+window.__sim = {
+  state, input, tick, camera, rec, arms, players, battle, useArm, saveArm, enterBattle, enterMission, fingerDir, fingerContactDist, worldYaw,
+  poseInvalid, resolveContacts, floorDepth, armSpheres, applyJoints,
+  get joint() { return arms[0].joint; }, get tipPoint() { return arms[0].tipPoint; }, get grabPoint() { return arms[0].grabPoint; },
+  get fingers() { return arms[0].fingers; }, get wrG() { return arms[0].wrG; },
+};
