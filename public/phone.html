@@ -89,7 +89,7 @@
   <h1>🦾 로봇팔 조종기 <span class="role" id="playerBadge" hidden></span></h1>
   <div class="status">
     <span><i class="dot" id="dServer"></i>서버</span>
-    <span><i class="dot" id="dDisplay"></i>PC</span>
+    <span><i class="dot" id="dDisplay"></i><span id="pcLabel">PC</span></span>
     <span><i class="dot" id="dSensor"></i>센서</span>
     <span id="vibChip" role="button" tabindex="0" title="눌러서 진동 테스트"><i class="dot" id="dVib"></i>진동 <b id="vibCount">0</b></span>
     <span id="voiceChip">🎙 듣는 중</span>
@@ -222,7 +222,13 @@ $('modeLine').textContent = room ? `인터넷 연결 · 방 코드 ${room}` : '�
 
 const ctl = createController({
   room,
-  onStatus: (s) => { $('dServer').classList.toggle('on', s.server); $('dDisplay').classList.toggle('on', s.display); },
+  onStatus: (s) => {
+    $('dServer').classList.toggle('on', s.server);
+    $('dDisplay').classList.toggle('on', s.display);
+    // 연결 방식 표시: 직접 연결이면 'PC', 중계 서버를 거치면 'PC·중계'
+    $('pcLabel').textContent = s.display && s.via === 'relay' ? 'PC·중계' : 'PC';
+    if (room && s.stage) $('modeLine').textContent = `인터넷 연결 · 방 코드 ${room} · ${s.stage}`;
+  },
   onFeedback: (m) => {
     if (m.vibrate) updateVibUI();
     if (m.contact) flash(m.contact);
