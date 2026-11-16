@@ -47,6 +47,9 @@
   #voiceChip { display: none; padding: 1px 8px; border-radius: 99px; background: var(--ok); color: #001; font-weight: 700; }
   #voiceChip.on { display: inline; }
   #voiceChip.hit { background: var(--warn); }
+  #voiceChip { cursor: pointer; }
+  #voiceChip.off { background: #3a4560; color: var(--text); }
+  .vslot .dots .undo { padding: 2px 8px; font-size: 11px; font-weight: 500; border-radius: 99px; margin-left: 6px; background: transparent; color: var(--muted); border-color: var(--line); }
   .sheet { position: fixed; inset: 0; z-index: 15; background: rgba(8, 11, 18, .97); overflow-y: auto;
     padding: calc(14px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom)); }
   .sheet[hidden] { display: none; }
@@ -151,18 +154,19 @@
   <div class="sheet-body">
     <div class="sheet-head"><h2>🎙 음성 명령 학습</h2><button id="vClose">닫기</button></div>
     <ol class="vsteps">
-      <li>명령마다 <b>● 녹음</b>을 누르고 1초 안에 말하세요. <b>8번 이상</b> 녹음하면 잘 알아들어요.</li>
-      <li><b>배경 소음</b>은 아무 말도 하지 말고 녹음하세요. (교실이라면 교실 소리 그대로)</li>
-      <li><b>🧠 학습시키기</b> → <b>🎙 음성 조종 켜기</b>. 말하면 버튼을 누른 것처럼 동작해요.</li>
+      <li>명령마다 <b>● 녹음</b>을 누르고 <b>2초 안에 아무 때나</b> 말하세요. 칸마다 <b>10번 이상</b> 녹음하면 잘 알아들어요.</li>
+      <li>잘 알아듣게 하려면: 실제로 쓸 때처럼 <b>폰을 잡은 자세·거리·목소리 크기</b>로, 조금씩 다르게(크게·작게·빠르게) 녹음하세요.</li>
+      <li><b>배경 소음</b>은 말하지 말고 3초씩 녹음하세요. 교실 소리·옆 사람 말소리가 섞여도 좋아요.</li>
+      <li><b>🧠 학습시키기</b> → <b>🎙 음성 조종 켜기</b>. 녹음과 학습 결과는 폰에 저장돼서 <b>다음에 열면 그대로</b> 있고, 켜 두었다면 시작할 때 자동으로 켜져요.</li>
     </ol>
     <p class="vmsg" id="vMsg">준비 중…</p>
     <div id="vSlots"></div>
     <button id="vTrain">🧠 학습시키기</button>
     <div class="vprog"><div id="vBar"></div></div>
     <button id="vListen">🎙 음성 조종 켜기</button>
-    <div class="vthr"><span>확신도 기준</span><input type="range" id="vThr" min="60" max="98" step="1"><b id="vThrVal">75%</b></div>
+    <div class="vthr"><span>확신도 기준</span><input type="range" id="vThr" min="60" max="98" step="1"><b id="vThrVal">70%</b></div>
     <div class="vlive" id="vLive"></div>
-    <button id="vClear">학습한 내용 모두 지우기</button>
+    <button id="vClear">녹음·학습 결과 모두 지우기</button>
   </div>
 </div>
 <div id="flash"></div>
@@ -170,6 +174,7 @@
 <script type="module">
 import { createController, axis, haptics } from './controller.js';
 import { detectLocalServer, normalizeRoom } from './net.js';
+import { primeAudio } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
 const toast = (t) => { $('toast').textContent = t; $('toast').classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => $('toast').classList.remove('show'), 1600); };
@@ -347,9 +352,14 @@ $('btnSpeed').onclick = () => {
 };
 
 // ---------------- 음성 명령 ----------------
-// 학습 창을 처음 열 때 음성 모듈을 불러옴 (조종기만 쓸 때는 불러오지 않음)
-let voice = null, VOICE = null, voiceCool = 0, elbowVoiceTimer = 0;
+// 학습한 적이 있으면 페이지를 열 때 음성 모듈을 미리 불러와 저장된 학습 결과를 준비해 둠.
+// 지난번에 음성 조종을 켜 두었다면 '시작하기'를 누를 때 자동으로 다시 켬.
+let voice = null, VOICE = null, voiceCool = 0, elbowVoiceTimer = 0, voiceLoading = null, autoWanted = false;
 const slotLabel = (k) => (VOICE ? (VOICE.SLOTS.find((s) => s.key === k) || {}).label : k) || k;
+const vstore = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* 무시 */ } },
+};
 
 // 인식된 명령 → 버튼을 누른 것과 같은 동작
 function voiceCommand(key, score) {
@@ -368,10 +378,46 @@ function voiceCommand(key, score) {
   const chip = $('voiceChip');
   chip.textContent = `🎙 ${slotLabel(key)}`;
   chip.classList.add('hit');
-  setTimeout(() => { chip.classList.remove('hit'); chip.textContent = '🎙 듣는 중'; }, 900);
+  setTimeout(() => { chip.classList.remove('hit'); updateVoiceButtons(); }, 900);
 }
 
 function vMsg(text, err = false) { $('vMsg').textContent = text; $('vMsg').classList.toggle('err', err); }
+
+// 음성 모듈 불러오기 + 저장된 녹음·학습 결과 준비 (한 번만)
+function loadVoice(onStep = () => {}) {
+  if (!voiceLoading) {
+    voiceLoading = (async () => {
+      VOICE = await import('./voice.js');
+      voice = VOICE.createVoice();
+      updateVoiceButtons();
+      await voice.init(onStep);
+      $('vThr').value = Math.round(voice.threshold * 100);
+      $('vThrVal').textContent = $('vThr').value + '%';
+      updateVoiceButtons();
+      return voice;
+    })().catch((e) => { voiceLoading = null; voice = null; throw e; });
+  }
+  return voiceLoading;
+}
+
+function onVoiceResult(r) {
+  if (!$('voiceSheet').hidden) renderLive(r);
+  if (r.best !== VOICE.NOISE && r.score >= voice.threshold && r.score - r.second >= voice.margin) voiceCommand(r.best, r.score);
+}
+async function startListening() {
+  if (!voice || !voice.trained || voice.isListening()) return;
+  await voice.start(onVoiceResult);
+  vstore.set(VOICE.AUTO_KEY, '1');      // 다음에 열 때도 자동으로 켜기
+  updateVoiceButtons();
+}
+async function stopListening() {
+  if (!voice) return;
+  await voice.stop();
+  vstore.set(VOICE.AUTO_KEY, '0');
+  renderLive(null);
+  if ($('voiceSheet').hidden) voice.releaseMic();
+  updateVoiceButtons();
+}
 
 function renderSlots() {
   const c = voice.counts();
@@ -386,21 +432,34 @@ function renderSlots() {
     name.innerHTML = `${s.label}<small>${s.hint}</small>`;
     const dots = document.createElement('div');
     dots.className = 'dots';
-    for (let i = 0; i < Math.max(8, n); i++) {
+    for (let i = 0; i < Math.max(VOICE.GOOD_EXAMPLES, n); i++) {
       const d = document.createElement('i');
       if (i < n) d.className = 'on';
       dots.appendChild(d);
+    }
+    if (n > 0) {
+      const undo = document.createElement('button');
+      undo.className = 'undo';
+      undo.textContent = '↶ 마지막 녹음 지우기';
+      undo.onclick = async () => { if (await voice.undo(s.key)) { vMsg(`${s.label}의 마지막 녹음을 지웠어요.`); renderSlots(); } };
+      dots.appendChild(undo);
     }
     const btn = document.createElement('button');
     btn.textContent = `● 녹음 (${n})`;
     btn.onclick = async () => {
       if (voice.isBusy()) return;
       voice.primeAudio();   // 누른 순간 오디오 장치를 깨움 (폰에서 두 번째 녹음부터 멈추던 문제 방지)
+      const secs = VOICE.recordSeconds(s.key);
       btn.classList.add('rec');
-      btn.textContent = s.key === VOICE.NOISE ? '조용히…' : '말하세요!';
+      btn.textContent = s.key === VOICE.NOISE ? `조용히… ${secs}초` : `지금 말하세요! ${secs}초`;
       buzz(30);
-      try { await voice.record(s.key); vMsg(`${s.label} 녹음 ${n + 1}번째 완료`); }
-      catch (e) {
+      try {
+        await voice.record(s.key);
+        const total = n + 1;
+        vMsg(total < VOICE.GOOD_EXAMPLES
+          ? `${s.label} ${total}번째 녹음 완료 · ${VOICE.GOOD_EXAMPLES}번 이상이면 더 잘 알아들어요`
+          : `${s.label} ${total}번째 녹음 완료 · 충분해요! 녹음을 바꿨으면 다시 학습시키세요`);
+      } catch (e) {
         const m = e.message || String(e);
         vMsg(/권한|Permission|NotAllowed/i.test(m) ? '마이크 권한이 필요해요. 브라우저 설정에서 마이크를 허용해 주세요.' : '녹음하지 못했어요: ' + m, true);
       }
@@ -426,37 +485,45 @@ function renderLive(r) {
   });
 }
 
+// 버튼·위쪽 표시 갱신. 위쪽 🎙 표시는 눌러서 켜고 끌 수 있음
 function updateVoiceButtons() {
-  const on = voice && voice.isListening();
+  const on = !!(voice && voice.isListening());
+  const ready = !!(voice && voice.ready);
   $('vListen').textContent = on ? '■ 음성 조종 끄기' : '🎙 음성 조종 켜기';
-  $('vListen').classList.toggle('on', !!on);
+  $('vListen').classList.toggle('on', on);
   $('vListen').disabled = !voice || !voice.trained;
-  $('btnVoice').classList.toggle('on', !!on);
-  $('voiceChip').classList.toggle('on', !!on);
+  $('btnVoice').classList.toggle('on', on);
+  const chip = $('voiceChip');
+  if (chip.classList.contains('hit')) return;
+  const show = !!voiceLoading || (VOICE && VOICE.hasSavedVoice());
+  chip.classList.toggle('on', show);
+  chip.classList.toggle('off', show && !on);
+  chip.textContent = !ready ? '🎙 준비 중' : on ? '🎙 듣는 중' : voice.trained ? '🎙 꺼짐' : '🎙 학습 필요';
 }
 
 async function openVoice() {
   $('voiceSheet').hidden = false;
-  if (!voice) {
-    try {
-      VOICE = await import('./voice.js');
-      voice = VOICE.createVoice();
-      await voice.init((t) => vMsg(t));
-      vMsg(voice.trained
-        ? '저장된 학습 결과를 불러왔어요. 바로 음성 조종을 켤 수 있어요. 다시 학습하려면 새로 녹음하세요.'
-        : '명령마다 녹음을 시작하세요. 처음 녹음할 때 마이크 권한을 물어보면 [허용]을 누르세요.');
-      $('vThr').value = Math.round(voice.threshold * 100);
-      $('vThrVal').textContent = $('vThr').value + '%';
-    } catch (e) {
-      vMsg(e.message || String(e), true);
-      voice = null;
-      return;
-    }
+  try {
+    await loadVoice((t) => vMsg(t));
+  } catch (e) {
+    vMsg(e.message || String(e), true);
+    return;
   }
+  const c = voice.counts();
+  const nRec = Object.values(c).reduce((a, b) => a + b, 0);
+  vMsg(voice.trained
+    ? `저장된 학습 결과를 불러왔어요${nRec ? ` (녹음 ${nRec}개)` : ''}. 녹음을 더 하고 다시 학습시키면 더 잘 알아들어요.`
+    : nRec ? `저장된 녹음 ${nRec}개를 불러왔어요. 부족한 칸을 채우고 학습시키세요.`
+      : '명령마다 녹음을 시작하세요. 처음 녹음할 때 마이크 권한을 물어보면 [허용]을 누르세요.');
   renderSlots();
   updateVoiceButtons();
 }
 $('btnVoice').onclick = openVoice;
+$('voiceChip').onclick = async () => {
+  if (!voice || !voice.ready || !voice.trained) { openVoice(); return; }
+  if (voice.isListening()) { await stopListening(); toast('🎙 음성 조종 끔'); }
+  else { voice.primeAudio(); try { await startListening(); toast('🎙 음성 조종 켬'); } catch (e) { toast('음성 조종을 켜지 못했어요'); } }
+};
 $('vClose').onclick = () => {
   $('voiceSheet').hidden = true;
   if (voice) voice.releaseMic();   // 듣는 중이 아니면 마이크를 끔
@@ -464,14 +531,18 @@ $('vClose').onclick = () => {
 $('vTrain').onclick = async () => {
   if (!voice || voice.isBusy()) return;
   $('vTrain').disabled = true;
+  const wasOn = voice.isListening();
   try {
-    vMsg('학습 중…');
-    const acc = await voice.train((ep, total, a) => {
+    vMsg('학습 중… 폰에 따라 20초~1분 걸려요');
+    const { acc, valAcc } = await voice.train((ep, total, a, va) => {
       $('vBar').style.width = (ep / total * 100) + '%';
-      vMsg(`학습 중… ${ep}/${total}  (정확도 ${Math.round(a * 100)}%)`);
+      vMsg(`학습 중… ${ep}/${total}  (정확도 ${Math.round(a * 100)}%${va != null ? ` · 검증 ${Math.round(va * 100)}%` : ''})`);
     });
-    vMsg(`학습 완료! 정확도 ${Math.round(acc * 100)}%. 이제 🎙 음성 조종 켜기를 누르세요.`);
+    const shown = valAcc != null ? valAcc : acc;
+    vMsg(`학습 완료! ${valAcc != null ? '처음 듣는 녹음으로 확인한 ' : ''}정확도 ${Math.round(shown * 100)}%.`
+      + (shown < 0.85 ? ' 칸마다 녹음을 더 하면 좋아져요.' : ' 이제 🎙 음성 조종 켜기를 누르세요.'), shown < 0.85);
     buzz([60, 40, 60]);
+    if (wasOn) await startListening();
   } catch (e) {
     vMsg(e.message || String(e), true);
   }
@@ -480,15 +551,10 @@ $('vTrain').onclick = async () => {
 };
 $('vListen').onclick = async () => {
   if (!voice) return;
-  if (voice.isListening()) { await voice.stop(); renderLive(null); vMsg('음성 조종을 껐어요.'); if ($('voiceSheet').hidden) voice.releaseMic(); }
+  if (voice.isListening()) { await stopListening(); vMsg('음성 조종을 껐어요.'); }
   else {
-    try {
-      await voice.start((r) => {
-        if (!$('voiceSheet').hidden) renderLive(r);
-        if (r.best !== VOICE.NOISE && r.score >= voice.threshold) voiceCommand(r.best, r.score);
-      });
-      vMsg('듣는 중… 학습한 말을 해 보세요. 창을 닫아도 계속 들어요.');
-    } catch (e) { vMsg('음성 조종을 켜지 못했어요: ' + (e.message || e), true); }
+    try { await startListening(); vMsg('듣는 중… 학습한 말을 해 보세요. 창을 닫아도 계속 듣고, 다음에 열 때도 자동으로 켜져요.'); }
+    catch (e) { vMsg('음성 조종을 켜지 못했어요: ' + (e.message || e), true); }
   }
   updateVoiceButtons();
 };
@@ -501,28 +567,41 @@ $('vClear').onclick = async () => {
   if (!voice) return;
   if ($('vClear').dataset.confirm !== '1') {
     $('vClear').dataset.confirm = '1';
-    $('vClear').textContent = '정말 지울까요? 한 번 더 누르세요';
-    setTimeout(() => { $('vClear').dataset.confirm = ''; $('vClear').textContent = '학습한 내용 모두 지우기'; }, 3000);
+    $('vClear').textContent = '녹음과 학습 결과가 모두 지워져요. 한 번 더 누르세요';
+    setTimeout(() => { $('vClear').dataset.confirm = ''; $('vClear').textContent = '녹음·학습 결과 모두 지우기'; }, 3000);
     return;
   }
   await voice.clear();
   $('vClear').dataset.confirm = '';
-  $('vClear').textContent = '학습한 내용 모두 지우기';
+  $('vClear').textContent = '녹음·학습 결과 모두 지우기';
   $('vBar').style.width = '0';
   renderLive(null);
   renderSlots();
   updateVoiceButtons();
-  vMsg('학습한 내용을 지웠어요.');
+  vMsg('녹음과 학습 결과를 모두 지웠어요.');
 };
-window.__voice = { get voice() { return voice; }, voiceCommand, openVoice };
+
+// 학습한 적이 있으면 미리 준비해 둠 (마이크는 켜지 않음)
+if (vstore.get('tiltarm-voice-has-data') === '1' || vstore.get('tiltarm-voice-model')) {
+  autoWanted = vstore.get('tiltarm-voice-auto') === '1';
+  $('voiceChip').classList.add('on', 'off');
+  $('voiceChip').textContent = '🎙 준비 중';
+  loadVoice().then(() => {
+    // '시작하기'를 이미 눌렀다면 바로 자동으로 켬 (오디오 장치는 그때 깨워 둠)
+    if (autoWanted && $('overlay').style.display === 'none') startListening().catch(() => {});
+  }).catch(() => updateVoiceButtons());
+}
+window.__voice = { get voice() { return voice; }, voiceCommand, openVoice, startListening, stopListening };
 
 $('btnStart').onclick = async () => {
   $('startErr').textContent = '';
+  if (autoWanted) primeAudio();   // 음성 조종을 자동으로 켤 거라면, 누른 이 순간 오디오 장치를 깨워 둠
   try {
     await ctl.start();
     calibrate();
     $('overlay').style.display = 'none';
     buzz(120);   // 시작할 때 한 번 진동 (진동이 되는 폰인지 바로 확인)
+    if (autoWanted && voice && voice.ready) startListening().then(() => toast('🎙 음성 조종이 켜졌어요')).catch(() => {});
   } catch (e) {
     $('startErr').textContent = e.message;
   }

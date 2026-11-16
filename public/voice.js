@@ -3,12 +3,18 @@
 // TensorFlow.js 의 음성 명령 기본 모델(speech-commands)에 '전이 학습'으로
 // 내가 녹음한 단어를 새로 가르칩니다. 녹음·학습·인식은 모두 폰 안에서 처리하고,
 // 처음에 라이브러리와 기본 모델(약 5MB)만 인터넷에서 받습니다.
+//
+// 저장: 녹음(IndexedDB)과 학습 결과(IndexedDB) 둘 다 폰에 저장 → 다시 열어도 그대로.
+//       학습 결과가 없어졌으면 저장된 녹음으로 자동으로 다시 학습합니다.
+
+import { primeAudio, installAudioPatches, releaseMic, audioState, sharedAudio } from './audio.js';
 
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js';
 const SC_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.5.4/dist/speech-commands.min.js';
-const NAME_KEY = 'tiltarm-voice-model';      // 저장된 학습 결과 이름
-const COUNT_KEY = 'tiltarm-voice-counts';    // 학습에 쓴 녹음 수
+const NAME_KEY = 'tiltarm-voice-model';       // 저장된 학습 결과 이름
 const THR_KEY = 'tiltarm-voice-threshold';
+export const HAS_DATA_KEY = 'tiltarm-voice-has-data';   // 녹음이나 학습 결과가 있는지 (빠른 확인용)
+export const AUTO_KEY = 'tiltarm-voice-auto';           // 지난번에 음성 조종을 켜 두었는지
 export const NOISE = '_background_noise_';
 
 // 학습할 명령 칸 (key 는 학습 라벨, 말은 아무 단어나 가능)
@@ -17,9 +23,14 @@ export const SLOTS = [
   { key: 'release', label: '놓기', hint: '예: "놓아"', required: true },
   { key: 'up', label: '팔꿈치 올리기', hint: '예: "올려" (선택)' },
   { key: 'down', label: '팔꿈치 내리기', hint: '예: "내려" (선택)' },
-  { key: NOISE, label: '배경 소음', hint: '아무 말도 하지 말고 녹음', required: true },
+  { key: NOISE, label: '배경 소음', hint: '말하지 말고 3초 녹음', required: true },
 ];
-export const MIN_EXAMPLES = 5;      // 칸마다 최소 녹음 수 (8번 이상 권장)
+export const MIN_EXAMPLES = 5;        // 칸마다 최소 녹음 수
+export const GOOD_EXAMPLES = 10;      // 권장 녹음 수
+// 녹음 길이: 단어는 2초(그 안에 아무 때나 말하면 됨), 배경 소음은 3초
+// 학습할 때 가장 큰 소리(말한 부분)를 중심으로 조금씩 밀린 여러 구간을 뽑아 배우므로 타이밍에 덜 민감해짐
+export const recordSeconds = (key) => (key === NOISE ? 3 : 2);
+const TRAIN = { epochs: 30, fineTuningEpochs: 12, augmentByMixingNoiseRatio: 0.5, validationSplit: 0.2 };
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -31,52 +42,40 @@ function loadScript(src) {
     document.head.appendChild(s);
   });
 }
-// ---- 마이크·오디오 장치를 한 번만 열어 계속 재사용 ----
-// 라이브러리는 녹음할 때마다 마이크와 오디오 장치(AudioContext)를 새로 열고 닫는다.
-// 그런데 새 오디오 장치를 '버튼을 누른 순간'이 아니라 마이크 준비를 기다린 뒤에 만들기 때문에,
-// 폰 브라우저에서는 두 번째부터 오디오 장치가 정지(suspended) 상태로 열려 소리가 들어오지 않고
-// 녹음이 끝나지 않는다. 그래서 버튼을 누르는 순간 오디오 장치를 한 번만 만들어 깨워 두고,
-// 라이브러리가 새로 만들거나 닫으려 할 때 그 하나를 계속 쓰게 한다. 마이크도 한 번만 열고 복사본을 넘긴다.
-const RealAudioContext = window.AudioContext || window.webkitAudioContext;
-let sharedCtx = null;
-let sharedStream = null;
-let realGetUserMedia = null;
-let patched = false;
-
-// 버튼을 누른 그 순간(사용자 동작 안)에 불러야 폰에서 오디오 장치가 정상으로 켜짐
-function primeAudio() {
-  if (!sharedCtx) {
-    try { sharedCtx = new RealAudioContext({ sampleRate: 44100 }); } catch { sharedCtx = new RealAudioContext(); }
-    sharedCtx.close = () => Promise.resolve();   // 라이브러리가 닫지 못하게 (계속 재사용)
-  }
-  if (sharedCtx.state !== 'running') sharedCtx.resume().catch(() => {});
-  return sharedCtx;
-}
-function installAudioPatches() {
-  if (patched) return;
-  patched = true;
-  const Shared = function SharedAudioContext() { return primeAudio(); };
-  window.AudioContext = Shared;
-  if (window.webkitAudioContext) window.webkitAudioContext = Shared;
-  const md = navigator.mediaDevices;
-  realGetUserMedia = md.getUserMedia.bind(md);
-  md.getUserMedia = async (c) => {
-    if (!c || !c.audio || c.video) return realGetUserMedia(c);
-    const alive = sharedStream && sharedStream.getAudioTracks().some((t) => t.readyState === 'live');
-    if (!alive) sharedStream = await realGetUserMedia({ audio: true, video: false });
-    return sharedStream.clone();   // 라이브러리는 복사본만 끄므로 원래 마이크는 계속 켜져 있음
-  };
-}
-// 마이크 끄기 (음성 창을 닫고 듣지 않을 때)
-function releaseMic() {
-  if (sharedStream) { sharedStream.getTracks().forEach((t) => t.stop()); sharedStream = null; }
-}
-
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* 무시 */ } },
   del(k) { try { localStorage.removeItem(k); } catch { /* 무시 */ } },
 };
+
+// ---- 녹음 저장용 IndexedDB ----
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open('tiltarm-voice', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function dbGet(key) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const q = db.transaction('kv').objectStore('kv').get(key);
+    q.onsuccess = () => resolve(q.result);
+    q.onerror = () => reject(q.error);
+  });
+}
+async function dbPut(key, value) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const t = db.transaction('kv', 'readwrite');
+    if (value == null) t.objectStore('kv').delete(key); else t.objectStore('kv').put(value, key);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
+export const hasSavedVoice = () => store.get(HAS_DATA_KEY) === '1' || !!store.get(NAME_KEY);
 
 export function createVoice() {
   let sc = null;          // speechCommands 라이브러리
@@ -85,61 +84,127 @@ export function createVoice() {
   let model = null;       // 학습이 끝난(또는 불러온) 전이 학습기
   let listening = false;
   let busy = false;
+  let initPromise = null;
+
+  const counts = () => { try { return rec ? rec.countExamples() : {}; } catch { return {}; } };   // 녹음이 없으면 오류를 내므로
+  const enoughToTrain = (c = counts()) => SLOTS.every((s) => !s.required || (c[s.key] || 0) >= MIN_EXAMPLES);
+
+  async function saveRecordings() {
+    const c = counts();
+    const any = Object.values(c).some((n) => n > 0);
+    try { await dbPut('examples', any ? rec.serializeExamples() : null); } catch { /* 저장 공간 문제 */ }
+    if (any || model) store.set(HAS_DATA_KEY, '1'); else store.del(HAS_DATA_KEY);
+  }
+
+  async function trainNow(onEpoch) {
+    if (listening) await v.stop();
+    busy = true;
+    try {
+      // 매번 새 학습기에 녹음을 옮겨 학습 (명령 칸을 추가·삭제해도 안전)
+      const name = 'tiltarm-voice-' + Date.now();
+      const fresh = base.createTransfer(name);
+      fresh.loadExamples(rec.serializeExamples(), false);
+      const total = TRAIN.epochs + TRAIN.fineTuningEpochs;
+      let ep = 0, acc = 0, valAcc = null;
+      const callback = {
+        onEpochEnd: async (_e, logs) => {
+          ep += 1;
+          acc = logs.acc;
+          if (logs.val_acc != null) valAcc = logs.val_acc;
+          onEpoch(ep, total, logs.acc, logs.val_acc);
+        },
+      };
+      try {
+        await fresh.train({ ...TRAIN, callback });
+      } catch (e) {
+        // 녹음이 적어 검증용으로 나눌 수 없으면 검증 없이 다시
+        if (!/split|validation/i.test(String(e && e.message))) throw e;
+        ep = 0;
+        await fresh.train({ ...TRAIN, validationSplit: undefined, callback });
+      }
+      const old = store.get(NAME_KEY);
+      await fresh.save();
+      store.set(NAME_KEY, name);
+      store.set(HAS_DATA_KEY, '1');
+      if (old && old !== name) { try { await sc.deleteSavedTransferModel(old); } catch { /* 무시 */ } }
+      model = fresh;
+      v.trained = true;
+      return { acc, valAcc };
+    } finally { busy = false; }
+  }
+
   const v = {
     ready: false,
     trained: false,
-    savedCounts: null,     // 저장된 학습 결과의 녹음 수
-    threshold: Number(store.get(THR_KEY)) || 0.75,   // 이 확신도 이상일 때만 명령 실행 (화면에서 조절)
+    threshold: Number(store.get(THR_KEY)) || 0.7,   // 이 확신도 이상일 때만 명령 실행 (화면에서 조절)
+    margin: 0.15,                                   // 1등이 2등보다 이만큼은 앞서야 실행 (헷갈릴 때 무시)
 
-    // 라이브러리·기본 모델 준비, 저장된 학습 결과 불러오기
-    async init(onStep = () => {}) {
-      if (v.ready) return;
-      onStep('음성 인식 도구를 불러오는 중… (처음 한 번, 약 5MB)');
-      await loadScript(TF_URL);
-      await loadScript(SC_URL);
-      sc = window.speechCommands;
-      installAudioPatches();
-      base = sc.create('BROWSER_FFT');
-      onStep('기본 음성 모델을 준비하는 중…');
-      await base.ensureModelLoaded();
-      rec = base.createTransfer('collect-' + Date.now());
-      const saved = store.get(NAME_KEY);
-      if (saved) {
+    // 라이브러리·기본 모델 준비 → 저장된 녹음·학습 결과 불러오기 (필요하면 자동으로 다시 학습)
+    init(onStep = () => {}) {
+      if (!initPromise) initPromise = (async () => {
+        onStep('음성 인식 도구를 불러오는 중… (처음 한 번, 약 5MB)');
+        await loadScript(TF_URL);
+        await loadScript(SC_URL);
+        sc = window.speechCommands;
+        installAudioPatches();
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* 무시 */ }
+        base = sc.create('BROWSER_FFT');
+        onStep('기본 음성 모델을 준비하는 중…');
+        await base.ensureModelLoaded();
+        rec = base.createTransfer('collect-' + Date.now());
+        // 저장된 녹음
         try {
-          const names = await sc.listSavedTransferModels();
-          if (names.includes(saved)) {
-            model = base.createTransfer(saved);
-            await model.load();
-            v.trained = true;
-            try { v.savedCounts = JSON.parse(store.get(COUNT_KEY)); } catch { v.savedCounts = null; }
-          }
-        } catch { model = null; v.trained = false; }
-      }
-      v.ready = true;
+          const buf = await dbGet('examples');
+          if (buf) rec.loadExamples(buf, false);
+        } catch { /* 저장된 녹음 없음 */ }
+        // 저장된 학습 결과
+        const saved = store.get(NAME_KEY);
+        if (saved) {
+          try {
+            const names = await sc.listSavedTransferModels();
+            if (names.includes(saved)) {
+              model = base.createTransfer(saved);
+              await model.load();
+              v.trained = true;
+            }
+          } catch { model = null; v.trained = false; }
+        }
+        // 학습 결과가 사라졌지만 녹음이 남아 있으면 자동으로 다시 학습
+        if (!v.trained && enoughToTrain()) {
+          onStep('저장된 녹음으로 다시 학습하는 중…');
+          await trainNow((ep, total) => onStep(`저장된 녹음으로 다시 학습하는 중… ${ep}/${total}`));
+        }
+        v.ready = true;
+      })();
+      return initPromise;
     },
 
-    counts() { return rec ? rec.countExamples ? safeCount(rec) : {} : {}; },
+    counts,
+    enoughToTrain,
 
-    // 1초 동안 녹음해서 한 칸에 추가 (녹음 버튼을 누른 동작 안에서 호출)
+    // 녹음해서 한 칸에 추가 (녹음 버튼을 누른 동작 안에서 호출)
     async record(key) {
       if (!v.ready || busy) return;
       primeAudio();                       // 첫 await 전에: 버튼을 누른 순간 오디오 장치를 깨움
       busy = true;
       const wasListening = listening;
+      const secs = recordSeconds(key);
       try {
         if (wasListening) await v.stop();
-        if (sharedCtx.state !== 'running') { try { await sharedCtx.resume(); } catch { /* 아래 시간 초과로 안내 */ } }
+        const ctx = sharedAudio();
+        if (ctx && ctx.state !== 'running') { try { await ctx.resume(); } catch { /* 아래 시간 초과로 안내 */ } }
         let timer;
         await Promise.race([
-          rec.collectExample(key),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('TIMEOUT')), 5000); }),
+          rec.collectExample(key, { durationMultiplier: secs }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('TIMEOUT')), (secs + 4) * 1000); }),
         ]).finally(() => clearTimeout(timer));
+        await saveRecordings();
       } catch (e) {
         // 멈춘 녹음 정리 → 다음 녹음을 바로 할 수 있게
         try { const ex = rec.audioDataExtractor; if (ex && ex.frameIntervalTask != null) await ex.stop(); } catch { /* 무시 */ }
         rec.streaming = false;            // 라이브러리의 '녹음 중' 표시도 풀어 줌 (안 풀면 다음 녹음이 거부됨)
         if (e && e.message === 'TIMEOUT') {
-          throw new Error(`마이크 소리가 들어오지 않았어요 (오디오 상태: ${sharedCtx ? sharedCtx.state : '없음'}). 한 번 더 눌러 보세요.`);
+          throw new Error(`마이크 소리가 들어오지 않았어요 (오디오 상태: ${audioState()}). 한 번 더 눌러 보세요.`);
         }
         throw e;
       } finally {
@@ -148,37 +213,26 @@ export function createVoice() {
       }
     },
 
-    // 녹음한 것으로 학습 → 폰에 저장
-    async train(onEpoch = () => {}) {
-      const c = v.counts();
-      const missing = SLOTS.filter((s) => s.required && (c[s.key] || 0) < MIN_EXAMPLES);
-      if (missing.length) throw new Error(`${missing.map((s) => s.label).join(', ')} 을(를) ${MIN_EXAMPLES}번 이상 녹음해 주세요.`);
-      if (listening) await v.stop();
-      busy = true;
-      try {
-        // 매번 새 학습기에 녹음을 옮겨 학습 (명령 칸을 추가·삭제해도 안전)
-        const name = 'tiltarm-voice-' + Date.now();
-        const fresh = base.createTransfer(name);
-        fresh.loadExamples(rec.serializeExamples(), false);   // 새 학습기는 비어 있으므로 '기존 것 지우기' 없이 복사
-        const epochs = 30;
-        let acc = 0;
-        await fresh.train({
-          epochs,
-          callback: { onEpochEnd: async (ep, logs) => { acc = logs.acc; onEpoch(ep + 1, epochs, logs.acc); } },
-        });
-        const old = store.get(NAME_KEY);
-        await fresh.save();
-        store.set(NAME_KEY, name);
-        store.set(COUNT_KEY, JSON.stringify(c));
-        if (old && old !== name) { try { await sc.deleteSavedTransferModel(old); } catch { /* 무시 */ } }
-        model = fresh;
-        v.trained = true;
-        v.savedCounts = c;
-        return acc;
-      } finally { busy = false; }
+    // 한 칸의 마지막 녹음 지우기 (잘못 녹음했을 때)
+    async undo(key) {
+      if (!rec || busy) return false;
+      let list = [];
+      try { list = rec.getExamples(key); } catch { return false; }
+      if (!list.length) return false;
+      rec.removeExample(list[list.length - 1].uid);
+      await saveRecordings();
+      return true;
     },
 
-    // 실시간 인식 시작: onResult({ labels, scores, best, score })
+    // 녹음한 것으로 학습 → 폰에 저장
+    async train(onEpoch = () => {}) {
+      const c = counts();
+      const missing = SLOTS.filter((s) => s.required && (c[s.key] || 0) < MIN_EXAMPLES);
+      if (missing.length) throw new Error(`${missing.map((s) => s.label).join(', ')} 을(를) ${MIN_EXAMPLES}번 이상 녹음해 주세요.`);
+      return trainNow(onEpoch);
+    },
+
+    // 실시간 인식 시작: onResult({ labels, scores, best, score, second })
     async start(onResult) {
       if (!v.trained || listening) return;
       primeAudio();                       // 버튼을 누른 순간 오디오 장치를 깨움
@@ -188,8 +242,9 @@ export function createVoice() {
         const scores = Array.from(r.scores);
         let bi = 0;
         scores.forEach((s, i) => { if (s > scores[bi]) bi = i; });
-        onResult({ labels, scores, best: labels[bi], score: scores[bi] });
-      }, { probabilityThreshold: 0, invokeCallbackOnNoiseAndUnknown: true, overlapFactor: 0.6, includeSpectrogram: false });
+        const second = Math.max(0, ...scores.filter((_, i) => i !== bi));
+        onResult({ labels, scores, best: labels[bi], score: scores[bi], second });
+      }, { probabilityThreshold: 0, invokeCallbackOnNoiseAndUnknown: true, overlapFactor: 0.75, includeSpectrogram: false });
       listening = true;
     },
     async stop() {
@@ -198,10 +253,10 @@ export function createVoice() {
       try { await model.stopListening(); } catch { /* 무시 */ }
     },
     isListening: () => listening,
+    isBusy: () => busy,
     primeAudio,
     releaseMic: () => { if (!listening && !busy) releaseMic(); },
-    audioState: () => (sharedCtx ? sharedCtx.state : 'none'),
-    isBusy: () => busy,
+    audioState,
 
     setThreshold(t) { v.threshold = t; store.set(THR_KEY, String(t)); },
 
@@ -211,16 +266,13 @@ export function createVoice() {
       if (rec) { try { rec.clearExamples(); } catch { /* 녹음이 없으면 오류를 내므로 무시 */ } }
       const old = store.get(NAME_KEY);
       if (old && sc) { try { await sc.deleteSavedTransferModel(old); } catch { /* 무시 */ } }
+      try { await dbPut('examples', null); } catch { /* 무시 */ }
       store.del(NAME_KEY);
-      store.del(COUNT_KEY);
+      store.del(HAS_DATA_KEY);
+      store.del(AUTO_KEY);
       model = null;
       v.trained = false;
-      v.savedCounts = null;
     },
   };
   return v;
-}
-
-function safeCount(r) {
-  try { return r.countExamples(); } catch { return {}; }   // 녹음이 하나도 없으면 오류를 내므로
 }
