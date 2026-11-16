@@ -41,6 +41,44 @@
   .mode-line { font-size: 12px; color: var(--muted); }
   body.battle #recRow { display: none; }
   #playerBadge { font-size: 13px; vertical-align: 3px; color: #fff; }
+  /* ---- 음성 명령 ---- */
+  .row4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
+  #btnVoice.on { background: var(--ok); color: #001; }
+  #voiceChip { display: none; padding: 1px 8px; border-radius: 99px; background: var(--ok); color: #001; font-weight: 700; }
+  #voiceChip.on { display: inline; }
+  #voiceChip.hit { background: var(--warn); }
+  .sheet { position: fixed; inset: 0; z-index: 15; background: rgba(8, 11, 18, .97); overflow-y: auto;
+    padding: calc(14px + env(safe-area-inset-top)) 16px calc(20px + env(safe-area-inset-bottom)); }
+  .sheet[hidden] { display: none; }
+  .sheet-body { display: grid; gap: 12px; max-width: 480px; margin: 0 auto; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .sheet-head h2 { margin: 0; font-size: 19px; }
+  .sheet-head button { padding: 8px 14px; font-size: 14px; }
+  .vsteps { margin: 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+  .vsteps b { color: var(--text); }
+  .vslot { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .vslot .name { font-weight: 700; }
+  .vslot .name small { font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .vslot .dots { grid-column: 1; display: flex; gap: 4px; flex-wrap: wrap; }
+  .vslot .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  .vslot .dots i.on { background: var(--ok); }
+  .vslot button { grid-row: 1 / span 2; grid-column: 2; padding: 12px 14px; font-size: 14px; min-width: 96px; }
+  .vslot button.rec { background: var(--bad); color: #fff; }
+  .vslot.noise { border-style: dashed; }
+  #vTrain, #vListen { padding: 16px; font-size: 17px; }
+  #vListen.on { background: var(--ok); color: #001; }
+  .vprog { height: 8px; background: #0b0f18; border-radius: 4px; overflow: hidden; }
+  #vBar { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .vmsg { margin: 0; font-size: 13px; color: var(--muted); min-height: 1.2em; }
+  .vmsg.err { color: var(--bad); }
+  .vlive { display: grid; gap: 6px; }
+  .vlive .meter span:first-child { font-size: 12px; }
+  .vlive .bar .fill { left: 0; }
+  .vlive .bar .thr { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); }
+  .vthr { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+  .vthr input { width: 100%; }
+  #vClear { background: transparent; color: var(--muted); font-size: 13px; padding: 10px; }
 </style>
 </head>
 <body>
@@ -51,6 +89,7 @@
     <span><i class="dot" id="dDisplay"></i>PC</span>
     <span><i class="dot" id="dSensor"></i>센서</span>
     <span id="vibChip" role="button" tabindex="0" title="눌러서 진동 테스트"><i class="dot" id="dVib"></i>진동 <b id="vibCount">0</b></span>
+    <span id="voiceChip">🎙 듣는 중</span>
   </div>
 </header>
 
@@ -78,9 +117,10 @@
     <button id="btnCam">🎥 시점</button>
     <button id="btnNext">배경 ▶</button>
   </div>
-  <div class="row3 small">
+  <div class="row4 small">
     <button id="btnCal">⊙ 영점</button>
     <button id="btnSpeed">속도: 보통</button>
+    <button id="btnVoice">🎙 음성</button>
     <button id="btnRestart">↺ 다시</button>
   </div>
   <div class="pad">
@@ -105,6 +145,26 @@
   <p id="startErr" class="err"></p>
 </div>
 <div class="toast" id="toast"></div>
+
+<!-- 음성 명령 학습 창 -->
+<div class="sheet" id="voiceSheet" hidden>
+  <div class="sheet-body">
+    <div class="sheet-head"><h2>🎙 음성 명령 학습</h2><button id="vClose">닫기</button></div>
+    <ol class="vsteps">
+      <li>명령마다 <b>● 녹음</b>을 누르고 1초 안에 말하세요. <b>8번 이상</b> 녹음하면 잘 알아들어요.</li>
+      <li><b>배경 소음</b>은 아무 말도 하지 말고 녹음하세요. (교실이라면 교실 소리 그대로)</li>
+      <li><b>🧠 학습시키기</b> → <b>🎙 음성 조종 켜기</b>. 말하면 버튼을 누른 것처럼 동작해요.</li>
+    </ol>
+    <p class="vmsg" id="vMsg">준비 중…</p>
+    <div id="vSlots"></div>
+    <button id="vTrain">🧠 학습시키기</button>
+    <div class="vprog"><div id="vBar"></div></div>
+    <button id="vListen">🎙 음성 조종 켜기</button>
+    <div class="vthr"><span>확신도 기준</span><input type="range" id="vThr" min="60" max="98" step="1"><b id="vThrVal">75%</b></div>
+    <div class="vlive" id="vLive"></div>
+    <button id="vClear">학습한 내용 모두 지우기</button>
+  </div>
+</div>
 <div id="flash"></div>
 
 <script type="module">
@@ -285,6 +345,169 @@ $('btnSpeed').onclick = () => {
   speedIdx = (speedIdx + 1) % speeds.length;
   $('btnSpeed').textContent = `속도: ${speeds[speedIdx][0]}`;
 };
+
+// ---------------- 음성 명령 ----------------
+// 학습 창을 처음 열 때 음성 모듈을 불러옴 (조종기만 쓸 때는 불러오지 않음)
+let voice = null, VOICE = null, voiceCool = 0, elbowVoiceTimer = 0;
+const slotLabel = (k) => (VOICE ? (VOICE.SLOTS.find((s) => s.key === k) || {}).label : k) || k;
+
+// 인식된 명령 → 버튼을 누른 것과 같은 동작
+function voiceCommand(key, score) {
+  const now = performance.now();
+  if (now - voiceCool < 900) return;   // 한 번 말한 것이 여러 번 실행되지 않도록
+  voiceCool = now;
+  if (key === 'grab' && !grip) setGrip(true);
+  else if (key === 'release' && grip) setGrip(false);
+  else if (key === 'up' || key === 'down') {
+    elbowDir = key === 'up' ? -1 : 1;
+    clearTimeout(elbowVoiceTimer);
+    elbowVoiceTimer = setTimeout(() => { elbowDir = 0; }, 700);
+  } else return;
+  buzz(40);
+  toast(`🎙 ${slotLabel(key)} (${Math.round(score * 100)}%)`);
+  const chip = $('voiceChip');
+  chip.textContent = `🎙 ${slotLabel(key)}`;
+  chip.classList.add('hit');
+  setTimeout(() => { chip.classList.remove('hit'); chip.textContent = '🎙 듣는 중'; }, 900);
+}
+
+function vMsg(text, err = false) { $('vMsg').textContent = text; $('vMsg').classList.toggle('err', err); }
+
+function renderSlots() {
+  const c = voice.counts();
+  const box = $('vSlots');
+  box.innerHTML = '';
+  for (const s of VOICE.SLOTS) {
+    const n = c[s.key] || 0;
+    const row = document.createElement('div');
+    row.className = 'vslot' + (s.key === VOICE.NOISE ? ' noise' : '');
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.innerHTML = `${s.label}<small>${s.hint}</small>`;
+    const dots = document.createElement('div');
+    dots.className = 'dots';
+    for (let i = 0; i < Math.max(8, n); i++) {
+      const d = document.createElement('i');
+      if (i < n) d.className = 'on';
+      dots.appendChild(d);
+    }
+    const btn = document.createElement('button');
+    btn.textContent = `● 녹음 (${n})`;
+    btn.onclick = async () => {
+      if (voice.isBusy()) return;
+      btn.classList.add('rec');
+      btn.textContent = s.key === VOICE.NOISE ? '조용히…' : '말하세요!';
+      buzz(30);
+      try { await voice.record(s.key); vMsg(`${s.label} 녹음 ${n + 1}번째 완료`); }
+      catch (e) { vMsg('녹음하지 못했어요: ' + (e.message || e) + ' (마이크 권한을 허용해 주세요)', true); }
+      renderSlots();
+    };
+    row.append(name, btn, dots);
+    box.appendChild(row);
+  }
+}
+
+function renderLive(r) {
+  const box = $('vLive');
+  if (!r) { box.innerHTML = ''; return; }
+  if (box.childElementCount !== r.labels.length) {
+    box.innerHTML = r.labels.map((l, i) => `<div class="meter"><span>${slotLabel(l)}</span><div class="bar"><i class="fill" id="vf${i}"></i><i class="thr" style="left:${voice.threshold * 100}%"></i></div><span class="val" id="vv${i}">0</span></div>`).join('');
+  }
+  r.scores.forEach((s, i) => {
+    const f = document.getElementById('vf' + i);
+    if (!f) return;
+    f.style.width = (s * 100) + '%';
+    f.style.background = r.labels[i] === VOICE.NOISE ? 'var(--muted)' : s >= voice.threshold ? 'var(--ok)' : 'var(--accent)';
+    document.getElementById('vv' + i).textContent = Math.round(s * 100);
+  });
+}
+
+function updateVoiceButtons() {
+  const on = voice && voice.isListening();
+  $('vListen').textContent = on ? '■ 음성 조종 끄기' : '🎙 음성 조종 켜기';
+  $('vListen').classList.toggle('on', !!on);
+  $('vListen').disabled = !voice || !voice.trained;
+  $('btnVoice').classList.toggle('on', !!on);
+  $('voiceChip').classList.toggle('on', !!on);
+}
+
+async function openVoice() {
+  $('voiceSheet').hidden = false;
+  if (!voice) {
+    try {
+      VOICE = await import('./voice.js');
+      voice = VOICE.createVoice();
+      await voice.init((t) => vMsg(t));
+      vMsg(voice.trained
+        ? '저장된 학습 결과를 불러왔어요. 바로 음성 조종을 켤 수 있어요. 다시 학습하려면 새로 녹음하세요.'
+        : '명령마다 녹음을 시작하세요. 처음 녹음할 때 마이크 권한을 물어보면 [허용]을 누르세요.');
+      $('vThr').value = Math.round(voice.threshold * 100);
+      $('vThrVal').textContent = $('vThr').value + '%';
+    } catch (e) {
+      vMsg(e.message || String(e), true);
+      voice = null;
+      return;
+    }
+  }
+  renderSlots();
+  updateVoiceButtons();
+}
+$('btnVoice').onclick = openVoice;
+$('vClose').onclick = () => { $('voiceSheet').hidden = true; };
+$('vTrain').onclick = async () => {
+  if (!voice || voice.isBusy()) return;
+  $('vTrain').disabled = true;
+  try {
+    vMsg('학습 중…');
+    const acc = await voice.train((ep, total, a) => {
+      $('vBar').style.width = (ep / total * 100) + '%';
+      vMsg(`학습 중… ${ep}/${total}  (정확도 ${Math.round(a * 100)}%)`);
+    });
+    vMsg(`학습 완료! 정확도 ${Math.round(acc * 100)}%. 이제 🎙 음성 조종 켜기를 누르세요.`);
+    buzz([60, 40, 60]);
+  } catch (e) {
+    vMsg(e.message || String(e), true);
+  }
+  $('vTrain').disabled = false;
+  updateVoiceButtons();
+};
+$('vListen').onclick = async () => {
+  if (!voice) return;
+  if (voice.isListening()) { await voice.stop(); renderLive(null); vMsg('음성 조종을 껐어요.'); }
+  else {
+    try {
+      await voice.start((r) => {
+        if (!$('voiceSheet').hidden) renderLive(r);
+        if (r.best !== VOICE.NOISE && r.score >= voice.threshold) voiceCommand(r.best, r.score);
+      });
+      vMsg('듣는 중… 학습한 말을 해 보세요. 창을 닫아도 계속 들어요.');
+    } catch (e) { vMsg('음성 조종을 켜지 못했어요: ' + (e.message || e), true); }
+  }
+  updateVoiceButtons();
+};
+$('vThr').oninput = () => {
+  voice && voice.setThreshold($('vThr').value / 100);
+  $('vThrVal').textContent = $('vThr').value + '%';
+  document.querySelectorAll('#vLive .thr').forEach((t) => { t.style.left = $('vThr').value + '%'; });
+};
+$('vClear').onclick = async () => {
+  if (!voice) return;
+  if ($('vClear').dataset.confirm !== '1') {
+    $('vClear').dataset.confirm = '1';
+    $('vClear').textContent = '정말 지울까요? 한 번 더 누르세요';
+    setTimeout(() => { $('vClear').dataset.confirm = ''; $('vClear').textContent = '학습한 내용 모두 지우기'; }, 3000);
+    return;
+  }
+  await voice.clear();
+  $('vClear').dataset.confirm = '';
+  $('vClear').textContent = '학습한 내용 모두 지우기';
+  $('vBar').style.width = '0';
+  renderLive(null);
+  renderSlots();
+  updateVoiceButtons();
+  vMsg('학습한 내용을 지웠어요.');
+};
+window.__voice = { get voice() { return voice; }, voiceCommand, openVoice };
 
 $('btnStart').onclick = async () => {
   $('startErr').textContent = '';
