@@ -26,6 +26,7 @@ export const CAL = {
   openMin: 1.45,                           // 손가락을 편 정도 (손끝~손목 / 손바닥 길이)
   targetDown: 0.15, targetR: 0.45,         // 목표 동그라미: 어깨보다 어깨너비×0.15 아래, 반지름 어깨너비×0.45
   holdSec: 1.0, captureSec: 1.0,           // 모두 맞은 채 1초 유지 → 1초 동안 기록
+  centerTol: 0.17,                         // 몸 중심이 화면 가운데에서 이만큼(가로의 비율) 안이면 OK
 };
 
 // ---------------- 계산 (화면·카메라와 상관없는 부분, 시험하기 쉽게 분리) ----------------
@@ -90,6 +91,9 @@ export function calibChecks(m, side) {
     { k: 'body', ok: m.poseOk, good: '양쪽 어깨가 보여요', bad: '양쪽 어깨가 화면에 나오게 앉아 주세요' },
     { k: 'dist', ok: m.poseOk && sh >= CAL.shoulderMin && sh <= CAL.shoulderMax, good: '카메라와 거리가 알맞아요',
       bad: sh > CAL.shoulderMax ? '카메라에서 조금 멀어져 주세요' : '카메라에 조금 가까이 와 주세요' },
+    { k: 'center', ok: m.poseOk && Math.abs(m.center.x / m.aspect - 0.5) <= CAL.centerTol, good: '화면 가운데에 있어요',
+      // 거울 화면 기준: 원본 영상에서 몸이 왼쪽(x 작음)이면 거울 화면에서는 오른쪽에 보임 → 왼쪽으로 옮기라고 안내
+      bad: m.center && m.center.x / m.aspect < 0.5 ? '화면 가운데로 (왼쪽으로) 조금 옮겨 주세요' : '화면 가운데로 (오른쪽으로) 조금 옮겨 주세요' },
     { k: 'hand', ok: m.ok, good: `${sideName(side)}이 보여요`,
       bad: m.reason === 'otherhand' ? `다른 손이 보여요. ${sideName(side)}을 들어 주세요` : `${sideName(side)}을 카메라에 보여 주세요` },
     { k: 'palm', ok: m.ok && m.palmFacing, good: '손바닥이 카메라를 봐요', bad: '손바닥이 카메라를 보게 돌려 주세요' },
@@ -99,19 +103,48 @@ export function calibChecks(m, side) {
   return { checks, allOk: checks.every((c) => c.ok), target, firstBad: checks.find((c) => !c.ok) };
 }
 
+// 손 위치 → 회전·높이 계산 기준
+// 보정 때의 손 위치(기준점)에서 화면 끝(여백 제외)까지 남은 공간을 재 두고,
+// 그 공간 안에서 로봇 회전 전체(±170°)와 높이 전체가 나오게 맞춤 → 손이 화면 밖으로 나갈 필요가 없음
+export const MAP = {
+  margin: 0.08,                 // 화면 가장자리 여백 (이 안쪽까지만 쓰면 됨)
+  yawMax: 170 * Math.PI / 180,  // 화면 끝에 손이 닿으면 이만큼 회전
+  curve: 1.35,                  // 가운데 근처는 천천히, 끝으로 갈수록 크게 (정밀 조종용)
+  hNeutral: 1.3, hMin: 0.6, hMax: 2.4,
+};
+// 기준점에서 각 방향 화면 끝까지 남은 공간 (가로·세로 비율을 맞춘 좌표)
+export function rangeBox(calib) {
+  const A = calib.aspect, mx = MAP.margin * A, my = MAP.margin;
+  const h0 = calib.hand0;
+  return {
+    left: mx, right: A - mx, top: my, bottom: 1 - my,          // 화면(원본 영상) 기준 사용 범위
+    roomR: Math.max(0.05, h0.x - mx),                           // 사용자 오른쪽 = 원본 영상의 왼쪽
+    roomL: Math.max(0.05, A - mx - h0.x),
+    roomUp: Math.max(0.05, h0.y - my),
+    roomDown: Math.max(0.05, 1 - my - h0.y),
+  };
+}
+
 // 보정값 + 특징값 → 로봇 집게 목표 (yawRight 라디안, reach/height 시뮬레이터 단위), grip 0/1
 export function toTarget(m, calib, sens = 1, prevGrip = 0) {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dz = Math.log(m.palm / calib.palm);           // 손을 밀면 손바닥이 커짐 → +
-  const yawRight = clamp((m.dx - calib.dx) * 1.3 * sens, -1.5, 1.5);
-  const height = clamp(1.3 + (m.dy - calib.dy) * 1.6 * sens, 0.6, 2.4);
+  const R = rangeBox(calib);
+  // 좌우: 기준점에서 오른쪽(+)/왼쪽(-)으로 남은 공간 대비 몇 % 움직였는지 → 회전
+  let u = calib.hand0.x - m.hand.x;
+  u = clamp((u > 0 ? u / R.roomR : u / R.roomL) * sens, -1, 1);
+  const yawRight = Math.sign(u) * MAP.yawMax * Math.pow(Math.abs(u), MAP.curve);
+  // 위아래: 남은 공간 대비 → 높이
+  let v = calib.hand0.y - m.hand.y;
+  v = clamp((v > 0 ? v / R.roomUp : v / R.roomDown) * sens, -1, 1);
+  const height = v > 0 ? MAP.hNeutral + v * (MAP.hMax - MAP.hNeutral) : MAP.hNeutral + v * (MAP.hNeutral - MAP.hMin);
   const reach = clamp(1.85 + dz * 2.2 * sens, 1.05, 2.85);
   const openRatio = m.open / calib.open;
   // 쥐면 닫힘, 펴면 열림 (경계에서 깜빡이지 않게 문턱을 두 개로)
   let grip = prevGrip;
   if (openRatio < 0.62 || m.pinch < 0.28) grip = 1;
   else if (openRatio > 0.78 && m.pinch > 0.4) grip = 0;
-  return { yawRight, height, reach, grip, openRatio, dz };
+  return { yawRight, height, reach, grip, openRatio, dz, u, v };
 }
 
 // 보정 자세 그림 (거울처럼 보이는 화면 기준: 오른손이면 화면 오른쪽 손을 듦)
@@ -135,7 +168,8 @@ export function createHandCam(ui) {
   let mode = 'off';           // off | loading | choose | calibrate | active
   let calibSamples = [], okSince = 0, lastSeen = 0, lastCheckKey = '';
   let palmInvert = false, palmBadSince = 0;
-  const sm = { dx: 0, dy: 0, palm: 0, open: 0, init: false };   // 부드럽게 만든 값
+  let lastT = null;   // 마지막 조종 값 (화면 게이지용)
+  const sm = { dx: 0, dy: 0, hx: 0, hy: 0, palm: 0, open: 0, init: false };   // 부드럽게 만든 값
   try {
     side = localStorage.getItem(SIDE_KEY);
     sens = Number(localStorage.getItem(SENS_KEY)) || 1;
@@ -187,7 +221,7 @@ export function createHandCam(ui) {
       for (const [a, b] of [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16]]) {
         g.beginPath(); g.moveTo(poseLm[a].x * w, poseLm[a].y * h); g.lineTo(poseLm[b].x * w, poseLm[b].y * h); g.stroke();
       }
-      if (!calibrating) {   // 조종 중: 몸 중심선
+      if (!calibrating && !calib) {   // (보정 전) 몸 중심선
         const cx = (poseLm[11].x + poseLm[12].x) / 2 * w;
         g.setLineDash([6, 6]); g.strokeStyle = 'rgba(255,197,49,.8)';
         g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke(); g.setLineDash([]);
@@ -222,6 +256,37 @@ export function createHandCam(ui) {
         g.beginPath(); g.roundRect(tx - pw / 2, ty - ph * 0.2, pw, ph, pw * 0.3); g.fill();
         for (let i = 0; i < 4; i++) { const fx = tx - pw / 2 + pw * (0.12 + i * 0.25); g.beginPath(); g.roundRect(fx - pw * 0.08, ty - ph * 0.95, pw * 0.16, ph * 0.8, pw * 0.08); g.fill(); }
         g.beginPath(); g.ellipse(tx + (side === 'left' ? -1 : 1) * pw * 0.62, ty + ph * 0.1, pw * 0.12, ph * 0.3, (side === 'left' ? 0.6 : -0.6), 0, Math.PI * 2); g.fill();
+      }
+    }
+    // 조종 중: 손을 움직여도 되는 범위 상자, 기준점(+), 회전·높이 게이지, 화면 끝 경고
+    if (mode === 'active' && calib) {
+      const R = rangeBox(calib);
+      const X = (ix) => ix / A * w, Y = (iy) => iy * h;
+      g.setLineDash([10, 8]); g.strokeStyle = 'rgba(255,255,255,.45)'; g.lineWidth = 2;
+      g.strokeRect(X(R.left), Y(R.top), X(R.right) - X(R.left), Y(R.bottom) - Y(R.top)); g.setLineDash([]);
+      const [cx0, cy0] = [X(calib.hand0.x), Y(calib.hand0.y)];
+      g.strokeStyle = 'rgba(255,197,49,.9)'; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(cx0 - 14, cy0); g.lineTo(cx0 + 14, cy0); g.moveTo(cx0, cy0 - 14); g.lineTo(cx0, cy0 + 14); g.stroke();
+      if (lastT) {
+        // 회전 게이지 (아래쪽 가로 막대): 가운데=기준, 끝=±170°
+        const gy = h - 14, gl = X(R.left), gr = X(R.right);
+        g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(gl, gy - 6, gr - gl, 12);
+        const gx = cx0 + (lastT.u > 0 ? (gl - cx0) * lastT.u : (gr - cx0) * -lastT.u);   // 원본 좌표: 사용자 오른쪽 = 왼쪽
+        g.fillStyle = '#38d6ff'; g.fillRect(Math.min(cx0, gx), gy - 6, Math.abs(gx - cx0), 12);
+        // 높이 게이지 (사용 범위 오른쪽 세로 막대 → 거울 화면에서는 왼쪽에 보임)
+        const vx = X(R.right) + 10, vt = Y(R.top), vb = Y(R.bottom);
+        g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(vx - 6, vt, 12, vb - vt);
+        const vy = cy0 + (lastT.v > 0 ? (vt - cy0) * lastT.v : (vb - cy0) * -lastT.v);
+        g.fillStyle = '#3ddc84'; g.fillRect(vx - 6, Math.min(cy0, vy), 12, Math.abs(vy - cy0));
+      }
+      // 손이 사용 범위 밖(화면 끝 근처)이면 그쪽 테두리를 빨갛게
+      if (m && m.hand) {
+        g.fillStyle = 'rgba(255,60,80,.55)';
+        const t = 16;
+        if (m.hand.x < R.left) g.fillRect(0, 0, t, h);
+        if (m.hand.x > R.right) g.fillRect(w - t, 0, t, h);
+        if (m.hand.y < R.top) g.fillRect(0, 0, w, t);
+        if (m.hand.y > R.bottom) g.fillRect(0, h - t, w, t);
       }
     }
     // 손 뼈대
@@ -276,6 +341,7 @@ export function createHandCam(ui) {
       lastSeen = now;
       const a = sm.init ? 0.4 : 1, az = sm.init ? 0.25 : 1;
       sm.dx += (m.dx - sm.dx) * a; sm.dy += (m.dy - sm.dy) * a;
+      sm.hx += (m.hand.x - sm.hx) * a; sm.hy += (m.hand.y - sm.hy) * a;
       sm.palm += (m.palm - sm.palm) * az; sm.open += (m.open - sm.open) * a;
       sm.init = true;
     }
@@ -298,7 +364,7 @@ export function createHandCam(ui) {
         const held = (now - okSince) / 1000;
         if (held >= CAL.holdSec) {
           phase = 'capture';
-          calibSamples.push({ dx: m.dx, dy: m.dy, palm: m.palm, open: m.open });
+          calibSamples.push({ dx: m.dx, dy: m.dy, palm: m.palm, open: m.open, hx: m.hand.x, hy: m.hand.y, aspect: m.aspect });
           if (held >= CAL.holdSec + CAL.captureSec) finishCalibration();
         } else phase = 'hold';
         cal.progress = Math.min(1, held / (CAL.holdSec + CAL.captureSec));
@@ -313,13 +379,16 @@ export function createHandCam(ui) {
       ui.onTarget(null);
       return null;
     }
-    const t = toTarget({ ...m, dx: sm.dx, dy: sm.dy, palm: sm.palm, open: sm.open, pinch: m.ok ? m.pinch : 1 }, calib, sens, grip);
+    const t = toTarget({ ...m, dx: sm.dx, dy: sm.dy, hand: { x: sm.hx, y: sm.hy }, palm: sm.palm, open: sm.open, pinch: m.ok ? m.pinch : 1 }, calib, sens, grip);
     grip = t.grip;
+    lastT = t;
     ui.onTarget(t);
     ui.status.textContent = '인식 중';
     ui.status.className = 'ok';
     const deg = Math.round(t.yawRight * 57.3);
-    ui.info.textContent = `회전 ${deg > 0 ? '오른쪽 ' : deg < 0 ? '왼쪽 ' : ''}${Math.abs(deg)}° · 높이 ${t.height.toFixed(1)} · 앞뒤 ${t.reach.toFixed(1)} · 집게 ${grip ? '닫힘 ✊' : '열림 🖐'}`;
+    const atEdge = Math.abs(t.u) >= 0.999 || Math.abs(t.v) >= 0.999;
+    ui.info.textContent = atEdge ? '점선 상자 끝에 닿았어요 — 더 가지 않아도 끝까지 돌아요'
+      : `회전 ${deg > 0 ? '오른쪽 ' : deg < 0 ? '왼쪽 ' : ''}${Math.abs(deg)}° · 높이 ${t.height.toFixed(1)} · 앞뒤 ${t.reach.toFixed(1)} · 집게 ${grip ? '닫힘 ✊' : '열림 🖐'}`;
     return null;
   }
 
@@ -329,8 +398,12 @@ export function createHandCam(ui) {
     calib = {
       dx: median(calibSamples.map((s) => s.dx)), dy: median(calibSamples.map((s) => s.dy)),
       palm: median(calibSamples.map((s) => s.palm)), open: median(calibSamples.map((s) => s.open)),
+      // 기준점: 보정 때의 손 위치 (이후 몸이 기울어도 이 위치를 기준으로 계산)
+      hand0: { x: median(calibSamples.map((s) => s.hx)), y: median(calibSamples.map((s) => s.hy)) },
+      aspect: calibSamples[calibSamples.length - 1].aspect,
     };
     sm.dx = calib.dx; sm.dy = calib.dy; sm.palm = calib.palm; sm.open = calib.open;
+    sm.hx = calib.hand0.x; sm.hy = calib.hand0.y;
     grip = 0;
     mode = 'active';
     lastCheckKey = '';
