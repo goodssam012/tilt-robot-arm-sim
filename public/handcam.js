@@ -5,7 +5,7 @@
 //   - 팔을 들기/내리기                    → 집게 높이
 //   - 손을 화면 쪽으로 밀기/당기기          → 집게 앞뒤 거리 (손바닥이 커 보이는 정도로 추정)
 //   - 손 쥐기(주먹) 또는 엄지·검지 집기      → 집기, 손 펴기 → 놓기
-// 처음에 오른손/왼손을 고르고, 편한 자세를 '기준(중심)'으로 보정합니다.
+// 처음에 오른손/왼손을 고르고, 화면의 안내(목표 동그라미·체크리스트)에 맞춰 기준 자세를 보정합니다.
 
 const MP_VER = '0.10.14';
 const MP_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VER}`;
@@ -13,48 +13,90 @@ const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmar
 const POSE_MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
 const SIDE_KEY = 'tiltarm-hand-side';
 const SENS_KEY = 'tiltarm-hand-sens';
+const PALM_KEY = 'tiltarm-hand-palm-invert';
 
 // 손 뼈대 연결선 (그리기용)
 const HAND_LINKS = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
   [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
 const TIPS = [8, 12, 16, 20];
 
+// 보정 기준
+export const CAL = {
+  shoulderMin: 0.18, shoulderMax: 0.75,   // 어깨 너비(화면 세로 기준 비율): 너무 작으면 멀고, 크면 가까움
+  openMin: 1.45,                           // 손가락을 편 정도 (손끝~손목 / 손바닥 길이)
+  targetDown: 0.15, targetR: 0.45,         // 목표 동그라미: 어깨보다 어깨너비×0.15 아래, 반지름 어깨너비×0.45
+  holdSec: 1.0, captureSec: 1.0,           // 모두 맞은 채 1초 유지 → 1초 동안 기록
+};
+
 // ---------------- 계산 (화면·카메라와 상관없는 부분, 시험하기 쉽게 분리) ----------------
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const sideName = (side) => (side === 'left' ? '왼손' : '오른손');
 
-// 한 프레임의 인식 결과 → 손 특징값
-// hands: [[{x,y},...21]] (정규화 좌표), pose: [{x,y},...33] | null, side: 'right'|'left', aspect: 가로/세로
-export function measure({ hands, pose, side, aspect = 4 / 3 }) {
+// 한 프레임의 인식 결과 → 몸·손 특징값
+// hands: [[{x,y},...21]] (정규화 좌표), pose: [{x,y,visibility},...33] | null, side: 'right'|'left', aspect: 가로/세로
+export function measure({ hands, pose, side, aspect = 4 / 3, invertPalm = false }) {
   const iso = (p) => ({ x: p.x * aspect, y: p.y });   // 가로·세로 비율을 맞춘 좌표
-  let center = null, scale = null, sideWrist = null;
+  const out = { ok: false, aspect, poseOk: false, center: null, scale: null, sideShoulder: null };
+  let sideWrist = null;
   if (pose && pose.length > 16) {
+    const vis = (i) => pose[i].visibility == null || pose[i].visibility > 0.5;
     const ls = iso(pose[11]), rs = iso(pose[12]);
-    center = { x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2 };
-    scale = Math.max(0.05, dist(ls, rs));             // 어깨 너비 = 길이의 기준
+    out.poseOk = vis(11) && vis(12);
+    out.center = { x: (ls.x + rs.x) / 2, y: (ls.y + rs.y) / 2 };
+    out.scale = Math.max(0.05, dist(ls, rs));         // 어깨 너비 = 길이의 기준
+    out.sideShoulder = side === 'right' ? rs : ls;    // (몸의 왼쪽/오른쪽 = 사람 기준)
+    out.shoulders = [ls, rs];
     sideWrist = iso(pose[side === 'right' ? 16 : 15]);
   }
-  if (!hands || !hands.length) return { ok: false, reason: 'nohand', center, scale };
+  if (!hands || !hands.length) return { ...out, reason: 'nohand' };
   // 고른 손: 몸 인식이 있으면 그쪽 손목에 가장 가까운 손, 없으면 첫 번째 손
   let pick = hands[0];
   if (sideWrist && hands.length > 1) {
     let best = Infinity;
     for (const h of hands) { const d = dist(iso(h[0]), sideWrist); if (d < best) { best = d; pick = h; } }
   } else if (sideWrist && dist(iso(pick[0]), sideWrist) > 0.25 * aspect) {
-    return { ok: false, reason: 'otherhand', center, scale };   // 보이는 손이 고른 손이 아님
+    return { ...out, reason: 'otherhand', raw: pick };   // 보이는 손이 고른 손이 아님
   }
   const P = pick.map(iso);
   const palm = Math.max(1e-4, dist(P[0], P[9]));       // 손목 ~ 가운뎃손가락 뿌리
   const open = TIPS.reduce((s, i) => s + dist(P[0], P[i]), 0) / TIPS.length / palm;   // 손 펴짐 정도
   const pinch = dist(P[4], P[8]) / palm;              // 엄지·검지 끝 거리
   const hand = { x: (P[0].x + P[9].x) / 2, y: (P[0].y + P[9].y) / 2 };
-  if (!center) { center = { x: 0.5 * aspect, y: 0.45 }; scale = 0.25 * aspect; }
+  // 손바닥 방향: 손목→검지 뿌리, 손목→새끼 뿌리 두 벡터의 회전 방향으로 판단
+  // (좌우 반전 안 한 영상에서 오른손 손바닥이 카메라를 보면 음수, 왼손이면 양수)
+  const cross = (P[5].x - P[0].x) * (P[17].y - P[0].y) - (P[5].y - P[0].y) * (P[17].x - P[0].x);
+  const facing = side === 'right' ? cross < 0 : cross > 0;
+  const palmFacing = invertPalm ? !facing : facing;   // 카메라마다 좌우가 다를 수 있어 자동으로 뒤집을 수 있게
+  const center = out.center || { x: 0.5 * aspect, y: 0.45 };
+  const scale = out.scale || 0.25 * aspect;
   return {
+    ...out,
     ok: true,
     // 원본(좌우 반전 안 한) 카메라 영상에서는 사용자의 오른쪽이 화면 왼쪽 → center - hand 가 '오른쪽' 방향
     dx: (center.x - hand.x) / scale,
     dy: (center.y - hand.y) / scale,                   // 위쪽이 +
-    palm, open, pinch, center, scale, raw: pick,
+    palm, open, pinch, hand, palmFacing, raw: pick,
   };
+}
+
+// 보정 자세 점검: 목표 동그라미 위치와 6가지 체크 (화면 안내용)
+export function calibChecks(m, side) {
+  const target = m.sideShoulder && m.scale
+    ? { x: m.sideShoulder.x, y: m.sideShoulder.y + CAL.targetDown * m.scale, r: CAL.targetR * m.scale }
+    : null;
+  const sh = m.scale ? m.scale : 0;   // 어깨 너비 (화면 세로=1 기준)
+  const handIn = !!(target && m.ok && dist(m.hand, target) < target.r);
+  const checks = [
+    { k: 'body', ok: m.poseOk, good: '양쪽 어깨가 보여요', bad: '양쪽 어깨가 화면에 나오게 앉아 주세요' },
+    { k: 'dist', ok: m.poseOk && sh >= CAL.shoulderMin && sh <= CAL.shoulderMax, good: '카메라와 거리가 알맞아요',
+      bad: sh > CAL.shoulderMax ? '카메라에서 조금 멀어져 주세요' : '카메라에 조금 가까이 와 주세요' },
+    { k: 'hand', ok: m.ok, good: `${sideName(side)}이 보여요`,
+      bad: m.reason === 'otherhand' ? `다른 손이 보여요. ${sideName(side)}을 들어 주세요` : `${sideName(side)}을 카메라에 보여 주세요` },
+    { k: 'palm', ok: m.ok && m.palmFacing, good: '손바닥이 카메라를 봐요', bad: '손바닥이 카메라를 보게 돌려 주세요' },
+    { k: 'open', ok: m.ok && m.open >= CAL.openMin, good: '손가락을 활짝 폈어요', bad: '손가락을 위로 활짝 펴 주세요' },
+    { k: 'place', ok: handIn, good: '손이 동그라미 안에 있어요', bad: '손을 동그라미 안으로 옮겨 주세요' },
+  ];
+  return { checks, allOk: checks.every((c) => c.ok), target, firstBad: checks.find((c) => !c.ok) };
 }
 
 // 보정값 + 특징값 → 로봇 집게 목표 (yawRight 라디안, reach/height 시뮬레이터 단위), grip 0/1
@@ -72,16 +114,36 @@ export function toTarget(m, calib, sens = 1, prevGrip = 0) {
   return { yawRight, height, reach, grip, openRatio, dz };
 }
 
+// 보정 자세 그림 (거울처럼 보이는 화면 기준: 오른손이면 화면 오른쪽 손을 듦)
+function poseFigure(side) {
+  const flip = side === 'left' ? ' style="transform:scaleX(-1)"' : '';
+  return `<svg class="cal-fig" viewBox="0 0 120 130"${flip} aria-hidden="true">
+    <circle cx="52" cy="26" r="13" fill="none" stroke="#fff" stroke-width="3.5"/>
+    <path d="M52 39 V92 M30 54 H74 M30 54 L24 92 M52 92 L40 124 M52 92 L64 124" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+    <path d="M74 54 L90 72 L92 48" stroke="#38d6ff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="85" y="30" width="15" height="17" rx="5" fill="#38d6ff"/>
+    <path d="M87 31 V18 M91 30 V14 M95 30 V16 M99 33 V22 M85 41 L79 35" stroke="#38d6ff" stroke-width="3.2" stroke-linecap="round"/>
+  </svg>`;
+}
+
 // ---------------- 카메라 + 인식 + 화면 ----------------
 export function createHandCam(ui) {
-  // ui: { panel, video, canvas, status, info, overlay, onTarget(t|null), onLoadStep(text) }
+  // ui: { panel, video, canvas, status, info, overlay, onTarget(t|null), onLoadStep(text), onSide(s), onCalibrated() }
   let vision = null, hand = null, pose = null, stream = null, raf = 0, frame = 0;
   let lastVideoTime = -1, lastPose = null;
   let side = null, calib = null, sens = 1, grip = 0;
   let mode = 'off';           // off | loading | choose | calibrate | active
-  let calibSamples = [], calibStart = 0, lastSeen = 0;
+  let calibSamples = [], okSince = 0, lastSeen = 0, lastCheckKey = '';
+  let palmInvert = false, palmBadSince = 0;
   const sm = { dx: 0, dy: 0, palm: 0, open: 0, init: false };   // 부드럽게 만든 값
-  try { side = localStorage.getItem(SIDE_KEY); sens = Number(localStorage.getItem(SENS_KEY)) || 1; } catch { /* 무시 */ }
+  try {
+    side = localStorage.getItem(SIDE_KEY);
+    sens = Number(localStorage.getItem(SENS_KEY)) || 1;
+    palmInvert = localStorage.getItem(PALM_KEY) === '1';
+  } catch { /* 무시 */ }
+
+  // 보정·손 선택 중에는 카메라 창을 크게
+  const setBig = (on) => { ui.panel.classList.toggle('big', on); document.body.classList.toggle('cam-big', on); };
 
   async function loadModels() {
     ui.onLoadStep('손 인식 도구를 불러오는 중… (처음 한 번, 약 14MB)');
@@ -104,22 +166,68 @@ export function createHandCam(ui) {
     await ui.video.play();
   }
 
-  function draw(m, poseLm) {
+  // 캔버스는 화면에서 좌우 반전되어 보이므로(거울), 글자는 그리지 않고 도형만 그림
+  function draw(m, poseLm, cal) {
     const c = ui.canvas, g = c.getContext('2d');
     const w = (c.width = ui.video.videoWidth || 640), h = (c.height = ui.video.videoHeight || 480);
+    const A = m ? m.aspect : w / h;
+    const px = (p) => [p.x / A * w, p.y * h];         // iso 좌표 → 픽셀
     g.clearRect(0, 0, w, h);
+    const calibrating = mode === 'calibrate' || mode === 'choose';
+
+    // 보정 중: 몸이 안 보이면 '여기에 앉으세요' 사람 모양 점선
+    if (calibrating && !(m && m.poseOk)) {
+      g.setLineDash([10, 8]); g.strokeStyle = 'rgba(255,255,255,.7)'; g.lineWidth = 4;
+      g.beginPath(); g.arc(w * 0.5, h * 0.3, h * 0.11, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.moveTo(w * 0.28, h * 0.62); g.quadraticCurveTo(w * 0.5, h * 0.44, w * 0.72, h * 0.62); g.lineTo(w * 0.78, h); g.moveTo(w * 0.28, h * 0.62); g.lineTo(w * 0.22, h); g.stroke();
+      g.setLineDash([]);
+    }
     if (poseLm) {   // 어깨·팔
       g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 3;
       for (const [a, b] of [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16]]) {
         g.beginPath(); g.moveTo(poseLm[a].x * w, poseLm[a].y * h); g.lineTo(poseLm[b].x * w, poseLm[b].y * h); g.stroke();
       }
-      const cx = (poseLm[11].x + poseLm[12].x) / 2 * w;   // 몸 중심선
-      g.setLineDash([6, 6]); g.strokeStyle = 'rgba(255,197,49,.8)';
-      g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke(); g.setLineDash([]);
+      if (!calibrating) {   // 조종 중: 몸 중심선
+        const cx = (poseLm[11].x + poseLm[12].x) / 2 * w;
+        g.setLineDash([6, 6]); g.strokeStyle = 'rgba(255,197,49,.8)';
+        g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke(); g.setLineDash([]);
+      }
     }
+    // 보정 중: 어깨 표시 + 고른 손 어깨에서 목표 동그라미까지 + 진행 고리
+    if (mode === 'calibrate' && cal && cal.target && m.shoulders) {
+      for (const s of m.shoulders) {
+        const [x, y] = px(s);
+        g.fillStyle = m.poseOk ? '#3ddc84' : '#ff5d6c';
+        g.beginPath(); g.arc(x, y, 9, 0, Math.PI * 2); g.fill();
+      }
+      const [sx, sy] = px(m.sideShoulder);
+      const [tx, ty] = px(cal.target);
+      const tr = cal.target.r / A * w;
+      g.setLineDash([8, 8]); g.strokeStyle = 'rgba(255,255,255,.8)'; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(sx, sy); g.lineTo(tx, ty); g.stroke(); g.setLineDash([]);
+      const okCol = cal.allOk ? '#3ddc84' : '#ffc531';
+      g.strokeStyle = okCol; g.lineWidth = 5;
+      g.beginPath(); g.arc(tx, ty, tr, 0, Math.PI * 2); g.stroke();
+      g.fillStyle = cal.allOk ? 'rgba(61,220,132,.18)' : 'rgba(255,197,49,.12)';
+      g.fill();
+      // 진행 고리 (모두 맞은 채 버틴 시간)
+      if (cal.progress > 0) {
+        g.strokeStyle = '#3ddc84'; g.lineWidth = 10;
+        g.beginPath(); g.arc(tx, ty, tr + 12, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cal.progress); g.stroke();
+      }
+      // 손이 아직 없으면 손바닥 모양 그림자
+      if (!m.ok) {
+        g.fillStyle = 'rgba(255,255,255,.35)';
+        const pw = tr * 0.55, ph = tr * 0.6;
+        g.beginPath(); g.roundRect(tx - pw / 2, ty - ph * 0.2, pw, ph, pw * 0.3); g.fill();
+        for (let i = 0; i < 4; i++) { const fx = tx - pw / 2 + pw * (0.12 + i * 0.25); g.beginPath(); g.roundRect(fx - pw * 0.08, ty - ph * 0.95, pw * 0.16, ph * 0.8, pw * 0.08); g.fill(); }
+        g.beginPath(); g.ellipse(tx + (side === 'left' ? -1 : 1) * pw * 0.62, ty + ph * 0.1, pw * 0.12, ph * 0.3, (side === 'left' ? 0.6 : -0.6), 0, Math.PI * 2); g.fill();
+      }
+    }
+    // 손 뼈대
     if (m && m.raw) {
-      const col = grip ? '#ffc531' : '#38d6ff';
-      g.strokeStyle = col; g.lineWidth = 3;
+      const col = mode === 'calibrate' ? (cal && cal.allOk ? '#3ddc84' : '#ffb547') : grip ? '#ffc531' : '#38d6ff';
+      g.strokeStyle = m.ok ? col : 'rgba(255,93,108,.8)'; g.lineWidth = 3;
       for (const [a, b] of HAND_LINKS) { g.beginPath(); g.moveTo(m.raw[a].x * w, m.raw[a].y * h); g.lineTo(m.raw[b].x * w, m.raw[b].y * h); g.stroke(); }
       g.fillStyle = '#fff';
       for (const p of m.raw) { g.beginPath(); g.arc(p.x * w, p.y * h, 3, 0, Math.PI * 2); g.fill(); }
@@ -133,11 +241,33 @@ export function createHandCam(ui) {
     lastVideoTime = v.currentTime;
     const ts = performance.now();
     const hr = hand.detectForVideo(v, ts);
-    if (frame++ % 2 === 0) { const pr = pose.detectForVideo(v, ts); lastPose = pr.landmarks && pr.landmarks[0] ? pr.landmarks[0] : lastPose; }
+    if (frame++ % 2 === 0) { const pr = pose.detectForVideo(v, ts); lastPose = pr.landmarks && pr.landmarks[0] ? pr.landmarks[0] : null; }
     const aspect = (v.videoWidth || 4) / (v.videoHeight || 3);
-    const m = measure({ hands: hr.landmarks, pose: lastPose, side: side || 'right', aspect });
-    draw(m, lastPose);
-    step(m);
+    const m = measure({ hands: hr.landmarks, pose: lastPose, side: side || 'right', aspect, invertPalm: palmInvert });
+    const cal = step(m);
+    draw(m, lastPose, cal);
+  }
+
+  // 보정 화면 글자 (체크리스트·안내)
+  function renderCalibUI(cal, phase) {
+    const key = cal.checks.map((c) => (c.ok ? 1 : 0)).join('') + phase;
+    if (key === lastCheckKey) return;
+    lastCheckKey = key;
+    const msg = phase === 'capture' ? '좋아요! 그대로 멈추세요…'
+      : phase === 'hold' ? '좋아요! 잠깐만 그대로…'
+        : cal.firstBad ? cal.firstBad.bad : '';
+    ui.overlay.className = 'cal';
+    ui.overlay.innerHTML = `
+      <div class="cal-guide">
+        ${poseFigure(side)}
+        <div class="cal-text">
+          <b>${sideName(side)} 보정</b>
+          <span>${sideName(side)} <b>손바닥을 카메라 쪽</b>으로, <b>손가락은 위로 활짝</b> (하이파이브 하듯).<br>
+          팔꿈치를 살짝 굽혀 손을 <b>${side === 'left' ? '왼쪽' : '오른쪽'} 어깨 앞 동그라미</b> 안에 두세요.</span>
+        </div>
+      </div>
+      <ul class="cal-check">${cal.checks.map((c) => `<li class="${c.ok ? 'ok' : ''}">${c.ok ? '✓' : '○'} ${c.ok ? c.good : c.bad.replace(/ 주세요$/, '')}</li>`).join('')}</ul>
+      <div class="cal-msg ${phase !== 'wait' ? 'good' : ''}">${msg}</div>`;
   }
 
   function step(m) {
@@ -150,22 +280,38 @@ export function createHandCam(ui) {
       sm.init = true;
     }
     if (mode === 'calibrate') {
-      const left = 3 - (now - calibStart) / 1000;
-      if (!m.ok) { calibStart = now; calibSamples = []; ui.overlay.innerHTML = '<b>손이 안 보여요</b><br>고른 손을 카메라에 보여 주세요'; return; }
-      if (left > 1) ui.overlay.innerHTML = `<b>${Math.ceil(left - 1)}</b><br>팔을 앞으로 편하게 내밀고<br>손을 편 채 멈추세요`;
+      const cal = calibChecks(m, side || 'right');
+      // 다른 건 다 맞는데 '손바닥 방향'만 5초 넘게 틀리면, 이 카메라는 좌우 판단이 반대인 것으로 보고 뒤집어 기억
+      const othersOk = cal.checks.every((c) => c.ok || c.k === 'palm');
+      if (othersOk && !cal.checks.find((c) => c.k === 'palm').ok) {
+        if (!palmBadSince) palmBadSince = now;
+        else if (now - palmBadSince > 5000) {
+          palmInvert = !palmInvert;
+          palmBadSince = 0;
+          try { localStorage.setItem(PALM_KEY, palmInvert ? '1' : '0'); } catch { /* 무시 */ }
+        }
+      } else palmBadSince = 0;
+      let phase = 'wait';
+      if (!cal.allOk) { okSince = 0; calibSamples = []; }
       else {
-        calibSamples.push({ dx: m.dx, dy: m.dy, palm: m.palm, open: m.open, pinch: m.pinch });
-        ui.overlay.innerHTML = '<b>기준 자세 기록 중…</b>';
-        if (left <= 0) finishCalibration();
+        if (!okSince) okSince = now;
+        const held = (now - okSince) / 1000;
+        if (held >= CAL.holdSec) {
+          phase = 'capture';
+          calibSamples.push({ dx: m.dx, dy: m.dy, palm: m.palm, open: m.open });
+          if (held >= CAL.holdSec + CAL.captureSec) finishCalibration();
+        } else phase = 'hold';
+        cal.progress = Math.min(1, held / (CAL.holdSec + CAL.captureSec));
       }
-      return;
+      if (mode === 'calibrate') renderCalibUI(cal, phase);
+      return cal;
     }
-    if (mode !== 'active') return;
+    if (mode !== 'active') return null;
     if (!m.ok && now - lastSeen > 300) {
       ui.status.textContent = m.reason === 'otherhand' ? '고른 손이 아닌 손이 보여요' : '손이 안 보여요 · 로봇 정지';
       ui.status.className = 'warn';
       ui.onTarget(null);
-      return;
+      return null;
     }
     const t = toTarget({ ...m, dx: sm.dx, dy: sm.dy, palm: sm.palm, open: sm.open, pinch: m.ok ? m.pinch : 1 }, calib, sens, grip);
     grip = t.grip;
@@ -174,11 +320,12 @@ export function createHandCam(ui) {
     ui.status.className = 'ok';
     const deg = Math.round(t.yawRight * 57.3);
     ui.info.textContent = `회전 ${deg > 0 ? '오른쪽 ' : deg < 0 ? '왼쪽 ' : ''}${Math.abs(deg)}° · 높이 ${t.height.toFixed(1)} · 앞뒤 ${t.reach.toFixed(1)} · 집게 ${grip ? '닫힘 ✊' : '열림 🖐'}`;
+    return null;
   }
 
   const median = (arr) => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
   function finishCalibration() {
-    if (calibSamples.length < 5) { calibStart = performance.now(); calibSamples = []; return; }
+    if (calibSamples.length < 5) { okSince = 0; calibSamples = []; return; }
     calib = {
       dx: median(calibSamples.map((s) => s.dx)), dy: median(calibSamples.map((s) => s.dy)),
       palm: median(calibSamples.map((s) => s.palm)), open: median(calibSamples.map((s) => s.open)),
@@ -186,17 +333,27 @@ export function createHandCam(ui) {
     sm.dx = calib.dx; sm.dy = calib.dy; sm.palm = calib.palm; sm.open = calib.open;
     grip = 0;
     mode = 'active';
+    lastCheckKey = '';
+    ui.overlay.className = '';
     ui.overlay.innerHTML = '<b>보정 완료!</b><br>손을 움직여 보세요';
-    setTimeout(() => { if (mode === 'active') ui.overlay.innerHTML = ''; }, 1500);
+    setTimeout(() => { setBig(false); }, 900);   // 잠깐 보여 준 뒤 원래 크기로
+    setTimeout(() => { if (mode === 'active') ui.overlay.innerHTML = ''; }, 1800);
     ui.onCalibrated && ui.onCalibrated();
   }
 
   function askSide() {
     mode = 'choose';
+    setBig(true);
     ui.onTarget(null);
-    ui.overlay.innerHTML = `<b>어느 손으로 조종할까요?</b><div class="cam-pick">
-      <button data-side="right"${side !== 'left' ? ' class="on"' : ''}>오른손</button>
-      <button data-side="left"${side === 'left' ? ' class="on"' : ''}>왼손</button></div>`;
+    ui.status.textContent = '손 선택';
+    ui.status.className = '';
+    ui.overlay.className = '';
+    ui.overlay.innerHTML = `<b>어느 손으로 조종할까요?</b>
+      <div class="cam-pick">
+        <button data-side="right"${side !== 'left' ? ' class="on"' : ''}>오른손</button>
+        <button data-side="left"${side === 'left' ? ' class="on"' : ''}>왼손</button>
+      </div>
+      <span class="cam-sub">고른 손의 손바닥을 카메라에 보여 주면서 조종해요</span>`;
     ui.overlay.querySelectorAll('button').forEach((b) => { b.onclick = () => chooseSide(b.dataset.side); });
   }
   function chooseSide(s) {
@@ -207,9 +364,11 @@ export function createHandCam(ui) {
   }
   function calibrate() {
     mode = 'calibrate';
+    setBig(true);
     calib = null;
     calibSamples = [];
-    calibStart = performance.now();
+    okSince = 0;
+    lastCheckKey = '';
     ui.onTarget(null);
     ui.status.textContent = '보정 중';
     ui.status.className = '';
@@ -220,11 +379,13 @@ export function createHandCam(ui) {
       ui.panel.hidden = false;
       if (mode !== 'off') return;
       mode = 'loading';
+      setBig(true);
       try {
         if (!hand) await loadModels();
         await startCamera();
       } catch (e) {
         mode = 'off';
+        setBig(false);
         const msg = String(e && (e.name || e.message) || e);
         ui.onLoadStep(/NotAllowed|Permission/i.test(msg) ? '카메라 권한이 필요해요. 주소창의 카메라 아이콘에서 허용해 주세요.'
           : /NotFound|Overconstrained/i.test(msg) ? '웹캠을 찾지 못했어요. 웹캠이 연결되어 있는지 확인해 주세요.'
@@ -240,6 +401,7 @@ export function createHandCam(ui) {
       if (stream) stream.getTracks().forEach((t) => t.stop());
       stream = null;
       mode = 'off';
+      setBig(false);
       ui.onTarget(null);
       ui.panel.hidden = true;
     },
@@ -250,6 +412,8 @@ export function createHandCam(ui) {
     get mode() { return mode; },
     // 시험용: 인식 결과를 직접 넣어 보기
     _step: step,
+    _draw: draw,
+    _setMode(mo, s) { mode = mo; if (s) side = s; if (mo === 'calibrate') calibrate(); },
     _setCalib(c) { calib = c; mode = 'active'; },
   };
 }

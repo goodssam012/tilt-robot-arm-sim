@@ -117,6 +117,39 @@
   #camInfo { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.2em; }
   #camHelp { font-size: 11px; color: var(--muted); line-height: 1.5; }
   #btnHand.on { background: var(--ok); color: #001; border-color: transparent; }
+  /* 손 선택·보정 중: 카메라 창을 화면 가운데에 크게 */
+  #camPanel.big { left: 50%; top: 50%; right: auto; bottom: auto; transform: translate(-50%, -50%);
+    width: min(900px, calc(100vw - 32px), calc((100vh - 150px) * 4 / 3)); z-index: 40;
+    box-shadow: 0 0 0 100vmax rgba(5, 8, 14, .6); transition: width .3s; }
+  #camPanel.big #camHelp, #camPanel.big .cam-ctrl label { display: none; }
+  body.cam-big #recPanel, body.cam-big #joints { visibility: hidden; }
+  #camOverlay .cam-sub { font-size: 13px; color: #dfe8ff; }
+  #camPanel.big #camOverlay { font-size: 17px; }
+  #camPanel.big #camOverlay b { font-size: 28px; }
+  #camPanel.big #camOverlay .cam-pick button { font-size: 20px; padding: 14px 26px; }
+  /* 보정 안내: 왼쪽 위 자세 그림·설명, 오른쪽 위 체크리스트, 아래 안내 문구 */
+  #camOverlay.cal { display: block; background: transparent; text-shadow: 0 1px 4px #000; }
+  #camOverlay.cal .cal-guide { position: absolute; left: 10px; top: 10px; display: flex; gap: 10px; align-items: center; max-width: 58%;
+    background: rgba(8, 12, 20, .72); border-radius: 12px; padding: 8px 12px 8px 6px; text-align: left; }
+  #camOverlay.cal .cal-fig { width: 64px; height: 70px; flex: none; }
+  #camOverlay.cal .cal-text { display: grid; gap: 4px; font-size: 12px; line-height: 1.5; }
+  #camOverlay.cal .cal-text > b { font-size: 15px; }
+  #camOverlay.cal .cal-text span b { font-size: inherit; color: #9fe8ff; }
+  #camOverlay.cal .cal-check { position: absolute; right: 10px; top: 10px; margin: 0; padding: 8px 12px; list-style: none;
+    background: rgba(8, 12, 20, .72); border-radius: 12px; font-size: 12px; line-height: 1.8; text-align: left; }
+  #camOverlay.cal .cal-check li { color: #ffb4bd; }
+  #camOverlay.cal .cal-check li.ok { color: #7ff0ae; }
+  #camOverlay.cal .cal-msg { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); white-space: nowrap;
+    background: rgba(8, 12, 20, .8); border-radius: 99px; padding: 8px 18px; font-size: 15px; font-weight: 700; color: #ffd27a; }
+  #camOverlay.cal .cal-msg:empty { display: none; }
+  #camOverlay.cal .cal-msg.good { color: #7ff0ae; }
+  #camPanel.big #camOverlay.cal .cal-text { font-size: 15px; }
+  #camPanel.big #camOverlay.cal .cal-text > b { font-size: 20px; }
+  #camPanel.big #camOverlay.cal .cal-text span b { font-size: inherit; }
+  #camPanel.big #camOverlay.cal .cal-fig { width: 96px; height: 104px; }
+  #camPanel.big #camOverlay.cal .cal-check { font-size: 15px; }
+  #camPanel.big #camOverlay.cal .cal-msg { font-size: 20px; bottom: 18px; }
+  #camPanel:not(.big) #camOverlay.cal .cal-guide, #camPanel:not(.big) #camOverlay.cal .cal-check { display: none; }
   /* 카메라 조종 중 충돌을 화면 테두리로 알림 (진동 대신) */
   #pcFlash { position: fixed; inset: 0; pointer-events: none; z-index: 30; border: 10px solid transparent; }
   #pcFlash.touch { animation: pcfTouch .3s ease-out; }
