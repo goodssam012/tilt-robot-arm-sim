@@ -5,8 +5,9 @@
 //   [손목 방식 · 기본] 사람 팔이 로봇팔을 따라 하는 방식
 //   - 팔꿈치를 굽혀 손 올리기/내리기        → 로봇 어깨 (위팔 세우기/눕히기)
 //   - 손목을 꺾어 손바닥 숙이기/젖히기      → 로봇 팔꿈치 (아래팔 내리기/올리기)
-//   [양손 방식 · 기본] 위와 같지만 로봇 어깨는 '다른 손'의 손목 꺾기로 (손 높이와 회전이 섞이지 않아 더 정확)
-//   - 다른 손 손목 숙이기/젖히기          → 로봇 어깨 (위팔 내리기/올리기)
+//   [팔꿈치 방식 · 기본] 위팔 각도로 로봇 어깨, 손목 꺾기로 로봇 팔꿈치
+//   - 팔꿈치를 옆으로 들어 위팔을 수평 쪽으로 → 로봇 위팔이 수평 쪽으로 눕기 (내 몸통 = 로봇 기둥)
+//   - 회전은 팔꿈치를 기준으로 손을 좌우로 (팔꿈치를 들어도 회전이 바뀌지 않게)
 //   [위치 방식 · 이전] 손 높이 → 집게 높이, 손을 화면 쪽으로 밀기/당기기 → 집게 앞뒤
 //   - 손 쥐기(주먹) 또는 엄지·검지 집기      → 집기, 손 펴기 → 놓기
 // 처음에 오른손/왼손을 고르고, 화면의 안내(목표 동그라미·체크리스트)에 맞춰 기준 자세를 보정합니다.
@@ -31,7 +32,8 @@ export const CAL = {
   openMin: 1.45,                           // 손가락을 편 정도 (손끝~손목 / 손바닥 길이)
   targetDown: 0.15, targetR: 0.45,         // 목표 동그라미: 어깨보다 어깨너비×0.15 아래, 반지름 어깨너비×0.45
   holdSec: 1.0, captureSec: 1.0,           // 모두 맞은 채 1초 유지 → 1초 동안 기록
-  centerTol: 0.17,                         // 몸 중심이 화면 가운데에서 이만큼(가로의 비율) 안이면 OK
+  centerTol: 0.17,
+  elbowDownMax: -50 * Math.PI / 180,      // 팔꿈치 방식: 보정 때 위팔이 이보다 아래로 (몸 옆에 내림)                         // 몸 중심이 화면 가운데에서 이만큼(가로의 비율) 안이면 OK
 };
 
 // ---------------- 계산 (화면·카메라와 상관없는 부분, 시험하기 쉽게 분리) ----------------
@@ -54,22 +56,39 @@ export function measure({ hands, worlds = null, pose, side, aspect = 4 / 3, inve
     out.sideShoulder = side === 'right' ? rs : ls;    // (몸의 왼쪽/오른쪽 = 사람 기준)
     out.shoulders = [ls, rs];
     sideWrist = iso(pose[side === 'right' ? 16 : 15]);
+    // 고른 쪽 팔꿈치: 위팔(어깨→팔꿈치)이 수평과 이루는 각도 (아래로 늘어뜨리면 -90°, 수평이면 0°)
+    const ei = side === 'right' ? 14 : 13;
+    const el = iso(pose[ei]);
+    out.elbow = el;
+    out.elbowOk = out.poseOk && vis(ei);
+    out.elev = Math.atan2(-(el.y - out.sideShoulder.y), Math.abs(el.x - out.sideShoulder.x));
+    out.forearmLen = dist(el, sideWrist);
   }
   if (!hands || !hands.length) return { ...out, reason: 'nohand' };
-  // 고른 손: 몸 인식이 있으면 그쪽 손목에 가장 가까운 손,
-  // 없으면 화면 위치로 (원본 영상에서 사용자의 오른손은 왼쪽(x 작음)에 보임)
+  // 고른 손: 몸 인식이 있으면 그쪽 손목에 가장 가까운 손, 없으면 첫 번째 손
   let pick = hands[0];
   if (sideWrist && hands.length > 1) {
     let best = Infinity;
     for (const h of hands) { const d = dist(iso(h[0]), sideWrist); if (d < best) { best = d; pick = h; } }
-  } else if (hands.length > 1) {
-    pick = hands.reduce((a, b) => ((side === 'right' ? b[0].x < a[0].x : b[0].x > a[0].x) ? b : a));
   } else if (sideWrist && dist(iso(pick[0]), sideWrist) > 0.25 * aspect) {
-    return { ...out, reason: 'otherhand', raw: pick, ...otherHand(pick, hands, worlds, iso) };   // 보이는 손이 고른 손이 아님
+    return { ...out, reason: 'otherhand', raw: pick };   // 보이는 손이 고른 손이 아님
   }
   const P = pick.map(iso);
-  const { palm, open, pinch, pitch, fore } = handFeatures(P, worlds && worlds[hands.indexOf(pick)]);
-  const two = hands.length > 1 ? otherHand(hands.find((h) => h !== pick), hands, worlds, iso) : {};
+  const palm = Math.max(1e-4, dist(P[0], P[9]));       // 손목 ~ 가운뎃손가락 뿌리
+  let open = TIPS.reduce((s, i) => s + dist(P[0], P[i]), 0) / TIPS.length / palm;   // 손 펴짐 정도
+  let pinch = dist(P[4], P[8]) / palm;                // 엄지·검지 끝 거리
+  // 손 기울기(손목 꺾임): 손목→가운뎃손가락 뿌리 방향이 위(0)에서 카메라 쪽으로 얼마나 숙었는지 (라디안, 숙이면 +)
+  let pitch = null;
+  const fore = dist(P[0], P[9]) / Math.max(1e-4, dist(P[5], P[17]));   // (3D 좌표가 없을 때) 손이 숙으면 짧아 보임
+  const W = worlds && worlds[hands.indexOf(pick)];
+  if (W && W.length > 20) {
+    const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
+    const pl = Math.max(1e-4, d3(W[0], W[9]));
+    // 3D 로 재면 손을 숙여 손가락이 짧아 보여도 쥠/폄을 잘못 판단하지 않음
+    open = TIPS.reduce((s, i) => s + d3(W[0], W[i]), 0) / TIPS.length / pl;
+    pinch = d3(W[4], W[8]) / pl;
+    pitch = Math.atan2(-((W[9].z || 0) - (W[0].z || 0)), -(W[9].y - W[0].y));   // z: 카메라에 가까울수록 작음
+  }
   const hand = { x: (P[0].x + P[9].x) / 2, y: (P[0].y + P[9].y) / 2 };
   // 손바닥 방향: 손목→검지 뿌리, 손목→새끼 뿌리 두 벡터의 회전 방향으로 판단
   // (좌우 반전 안 한 영상에서 오른손 손바닥이 카메라를 보면 음수, 왼손이면 양수)
@@ -84,32 +103,8 @@ export function measure({ hands, worlds = null, pose, side, aspect = 4 / 3, inve
     // 원본(좌우 반전 안 한) 카메라 영상에서는 사용자의 오른쪽이 화면 왼쪽 → center - hand 가 '오른쪽' 방향
     dx: (center.x - hand.x) / scale,
     dy: (center.y - hand.y) / scale,                   // 위쪽이 +
-    palm, open, pinch, hand, palmFacing, pitch, fore, raw: pick, ...two,
+    palm, open, pinch, hand, palmFacing, pitch, fore, raw: pick,
   };
-}
-// 한 손의 특징값: 손바닥 크기, 펴짐, 엄지·검지 거리, 기울기(손목 꺾임)
-function handFeatures(P, W) {
-  const palm = Math.max(1e-4, dist(P[0], P[9]));       // 손목 ~ 가운뎃손가락 뿌리
-  let open = TIPS.reduce((s, i) => s + dist(P[0], P[i]), 0) / TIPS.length / palm;   // 손 펴짐 정도
-  let pinch = dist(P[4], P[8]) / palm;                // 엄지·검지 끝 거리
-  // 손 기울기(손목 꺾임): 손목→가운뎃손가락 뿌리 방향이 위(0)에서 카메라 쪽으로 얼마나 숙었는지 (라디안, 숙이면 +)
-  let pitch = null;
-  const fore = dist(P[0], P[9]) / Math.max(1e-4, dist(P[5], P[17]));   // (3D 좌표가 없을 때) 손이 숙으면 짧아 보임
-  if (W && W.length > 20) {
-    const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
-    const pl = Math.max(1e-4, d3(W[0], W[9]));
-    // 3D 로 재면 손을 숙여 손가락이 짧아 보여도 쥠/폄을 잘못 판단하지 않음
-    open = TIPS.reduce((s, i) => s + d3(W[0], W[i]), 0) / TIPS.length / pl;
-    pinch = d3(W[4], W[8]) / pl;
-    pitch = Math.atan2(-((W[9].z || 0) - (W[0].z || 0)), -(W[9].y - W[0].y));   // z: 카메라에 가까울수록 작음
-  }
-  return { palm, open, pinch, pitch, fore };
-}
-// 다른 손(양손 방식에서 로봇 어깨를 맡는 손)
-function otherHand(h, hands, worlds, iso) {
-  if (!h) return {};
-  const f = handFeatures(h.map(iso), worlds && worlds[hands.indexOf(h)]);
-  return { ok2: true, open2: f.open, pitch2: f.pitch, fore2: f.fore, raw2: h };
 }
 
 // 보정 자세 점검: 목표 동그라미 위치와 6가지 체크 (화면 안내용)
@@ -132,17 +127,11 @@ export function calibChecks(m, side, scheme = 'wrist') {
     { k: 'open', ok: m.ok && m.open >= CAL.openMin, good: '손가락을 활짝 폈어요', bad: '손가락을 위로 활짝 펴 주세요' },
     { k: 'place', ok: handIn, good: '손이 동그라미 안에 있어요', bad: '손을 동그라미 안으로 옮겨 주세요' },
   ];
-  let target2 = null;
-  if (scheme === 'two') {
-    const other = side === 'right' ? 'left' : 'right';
-    if (m.shoulders && m.scale) {
-      const s2 = m.shoulders[side === 'right' ? 0 : 1];
-      target2 = { x: s2.x, y: s2.y + CAL.targetDown * m.scale, r: CAL.targetR * m.scale };
-    }
-    checks.push({ k: 'hand2', ok: !!m.ok2 && m.open2 >= CAL.openMin, good: `${sideName(other)}도 손가락을 위로 폈어요`,
-      bad: m.ok2 ? `${sideName(other)} 손가락도 위로 활짝 펴 주세요` : `${sideName(other)}도 손바닥을 카메라 쪽으로 들어 주세요` });
+  if (scheme === 'elbow') {
+    checks.push({ k: 'elbow', ok: !!m.elbowOk && m.elev <= CAL.elbowDownMax, good: '팔꿈치를 몸 옆에 내렸어요',
+      bad: !m.elbowOk ? '팔꿈치가 화면에 나오게 조금 멀어져 주세요' : '팔꿈치를 몸 옆으로 내려 주세요' });
   }
-  return { checks, allOk: checks.every((c) => c.ok), target, target2, firstBad: checks.find((c) => !c.ok) };
+  return { checks, allOk: checks.every((c) => c.ok), target, firstBad: checks.find((c) => !c.ok) };
 }
 
 // 손 위치 → 회전·높이 계산 기준
@@ -158,8 +147,9 @@ export const MAP = {
   foreMid: -10,                 // 보정 자세(손가락 위)일 때 로봇 아래팔 방향 = 시작 자세와 같게
   pitchMin: -55, pitchMax: 95,  // 손 기울기 사용 범위 (보정 자세 기준, 숙이면 +)
   pitchGain: 1.0,
-  // 양손 방식: 다른 손 기울기 → 로봇 어깨 (숙이면 내려감)
-  sh2Down: 1.0, sh2Up: 1.2,
+  // 팔꿈치 방식: 보정 자세(위팔 내림) → 로봇 어깨 85°, 위팔 수평 → 5° (로봇 위팔도 수평)
+  elevUpGain: 1.5,              // 보정 자세보다 더 내리면 로봇 위팔이 뒤로 (거의 안 씀)
+  yawForearm: 0.75,             // 팔꿈치 기준 손 좌우: 아래팔 길이의 이만큼 움직이면 끝까지 회전 (아래팔 약 50° 기울임)
 };
 export const DEG = Math.PI / 180;
 // 기준점에서 각 방향 화면 끝까지 남은 공간 (가로·세로 비율을 맞춘 좌표)
@@ -176,7 +166,7 @@ export function rangeBox(calib) {
 }
 
 // 보정값 + 특징값 → 로봇 집게 목표 (yawRight 라디안, reach/height 시뮬레이터 단위), grip 0/1
-// scheme: 'two'(양손 방식) | 'wrist'(손목 방식, 로봇 관절 각도로 바로) | 'pos'(위치 방식, 집게 위치 → 역기구학)
+// scheme: 'elbow'(팔꿈치 방식) | 'wrist'(손목 방식, 로봇 관절 각도로 바로) | 'pos'(위치 방식, 집게 위치 → 역기구학)
 export function toTarget(m, calib, sens = 1, prevGrip = 0, scheme = 'wrist') {
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dz = Math.log(m.palm / calib.palm);           // 손을 밀면 손바닥이 커짐 → +
@@ -184,6 +174,10 @@ export function toTarget(m, calib, sens = 1, prevGrip = 0, scheme = 'wrist') {
   // 좌우: 기준점에서 오른쪽(+)/왼쪽(-)으로 남은 공간 대비 몇 % 움직였는지 → 회전
   let u = calib.hand0.x - m.hand.x;
   u = clamp((u > 0 ? u / R.roomR : u / R.roomL) * sens, -1, 1);
+  if (scheme === 'elbow' && m.relX != null && calib.rel0 != null) {
+    // 팔꿈치 기준 손 위치로 회전 → 팔꿈치를 옆으로 들어도(손이 같이 옮겨져도) 회전은 그대로
+    u = clamp((calib.rel0 - m.relX) / (MAP.yawForearm * calib.fl0) * sens, -1, 1);
+  }
   const yawRight = Math.sign(u) * MAP.yawMax * Math.pow(Math.abs(u), MAP.curve);
   // 위아래: 남은 공간 대비 → 높이
   let v = calib.hand0.y - m.hand.y;
@@ -197,13 +191,15 @@ export function toTarget(m, calib, sens = 1, prevGrip = 0, scheme = 'wrist') {
   else if (openRatio > 0.78 && m.pinch > 0.4) grip = 0;
   // 손목 방식: 위팔 = 손 높이, 아래팔 = 손 기울기 (사람 아래팔·손이 로봇 위팔·아래팔을 따라 하는 느낌)
   let shoulder = (v > 0 ? MAP.shMid + v * (MAP.shUp - MAP.shMid) : MAP.shMid + v * (MAP.shMid - MAP.shDown)) * DEG;
-  let gv = v;   // 옆 게이지 값 (-1~1)
-  if (scheme === 'two') {
-    // 양손 방식: 위팔 = 다른 손 기울기 (손 높이는 쓰지 않음 → 회전과 섞이지 않음)
-    const p2 = pitchRel({ pitch: m.pitch2, fore: m.fore2 }, { pitch0: calib.pitch20, fore0: calib.fore20 }) * sens;
-    const deg = Math.max(MAP.shDown, Math.min(MAP.shUp, MAP.shMid - p2 / DEG * (p2 > 0 ? MAP.sh2Down : MAP.sh2Up)));
-    shoulder = deg * DEG;
-    gv = deg >= MAP.shMid ? (deg - MAP.shMid) / (MAP.shUp - MAP.shMid) : (deg - MAP.shMid) / (MAP.shMid - MAP.shDown);
+  let gv = v;   // 옆 게이지 (-1~1)
+  if (scheme === 'elbow' && m.elev != null && calib.elev0 != null) {
+    // 위팔 각도: 보정 자세 → 로봇 85°, 수평(0°) → 로봇 5°. 사이는 비례
+    const d = (m.elev - calib.elev0) * sens;
+    const span = Math.max(30 * DEG, -calib.elev0);
+    const deg = d >= 0 ? MAP.shMid - (d / span) * (MAP.shMid - MAP.shDown) : MAP.shMid - d / DEG * MAP.elevUpGain;
+    const c = Math.max(MAP.shDown, Math.min(MAP.shUp, deg));
+    shoulder = c * DEG;
+    gv = c >= MAP.shMid ? (c - MAP.shMid) / (MAP.shUp - MAP.shMid) : (c - MAP.shMid) / (MAP.shMid - MAP.shDown);
   }
   const pr = clamp(pitchRel(m, calib) * sens, MAP.pitchMin * DEG, MAP.pitchMax * DEG);
   const fore = MAP.foreMid * DEG - pr * MAP.pitchGain;   // 아래팔 방향 (수평 기준)
@@ -218,14 +214,11 @@ export function pitchRel(m, calib) {
 }
 
 // 보정 자세 그림 (거울처럼 보이는 화면 기준: 오른손이면 화면 오른쪽 손을 듦)
-function poseFigure(side, two = false) {
+function poseFigure(side) {
   const flip = side === 'left' ? ' style="transform:scaleX(-1)"' : '';
-  const arm2 = two ? `<g transform="translate(104 0) scale(-1 1)" opacity=".85"><path d="M74 54 L90 72 L92 48" stroke="#3ddc84" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="85" y="30" width="15" height="17" rx="5" fill="#3ddc84"/>
-    <path d="M87 31 V18 M91 30 V14 M95 30 V16 M99 33 V22 M85 41 L79 35" stroke="#3ddc84" stroke-width="3.2" stroke-linecap="round"/></g>` : '';
   return `<svg class="cal-fig" viewBox="0 0 120 130"${flip} aria-hidden="true">
     <circle cx="52" cy="26" r="13" fill="none" stroke="#fff" stroke-width="3.5"/>
-    <path d="M52 39 V92 M30 54 H74 ${two ? '' : 'M30 54 L24 92 '}M52 92 L40 124 M52 92 L64 124" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round"/>${arm2}
+    <path d="M52 39 V92 M30 54 H74 M30 54 L24 92 M52 92 L40 124 M52 92 L64 124" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
     <path d="M74 54 L90 72 L92 48" stroke="#38d6ff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
     <rect x="85" y="30" width="15" height="17" rx="5" fill="#38d6ff"/>
     <path d="M87 31 V18 M91 30 V14 M95 30 V16 M99 33 V22 M85 41 L79 35" stroke="#38d6ff" stroke-width="3.2" stroke-linecap="round"/>
@@ -242,9 +235,9 @@ export function createHandCam(ui) {
   let calibSamples = [], okSince = 0, lastSeen = 0, lastCheckKey = '';
   let palmInvert = false, palmBadSince = 0;
   let lastT = null;   // 마지막 조종 값 (화면 게이지용)
-  let scheme = 'two';
-  let seen2 = 0;   // 다른 손을 마지막으로 본 시각
-  const sm = { dx: 0, dy: 0, hx: 0, hy: 0, palm: 0, open: 0, pitch: 0, fore: 1, pitch2: 0, fore2: 1, init: false };   // 부드럽게 만든 값
+  let scheme = 'elbow';
+  let elbowSeen = 0;
+  const sm = { dx: 0, dy: 0, hx: 0, hy: 0, palm: 0, open: 0, pitch: 0, fore: 1, elev: 0, ex: 0, init: false };   // 부드럽게 만든 값
   try {
     side = localStorage.getItem(SIDE_KEY);
     sens = Number(localStorage.getItem(SENS_KEY)) || 1;
@@ -321,11 +314,6 @@ export function createHandCam(ui) {
       g.beginPath(); g.arc(tx, ty, tr, 0, Math.PI * 2); g.stroke();
       g.fillStyle = cal.allOk ? 'rgba(61,220,132,.18)' : 'rgba(255,197,49,.12)';
       g.fill();
-      if (cal.target2) {   // 양손 방식: 다른 손 자리 (점선)
-        const [ux, uy] = px(cal.target2);
-        g.setLineDash([8, 8]); g.strokeStyle = cal.checks.find((c) => c.k === 'hand2').ok ? '#3ddc84' : '#ffc531'; g.lineWidth = 4;
-        g.beginPath(); g.arc(ux, uy, cal.target2.r / A * w, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
-      }
       // 진행 고리 (모두 맞은 채 버틴 시간)
       if (cal.progress > 0) {
         g.strokeStyle = '#3ddc84'; g.lineWidth = 10;
@@ -373,6 +361,16 @@ export function createHandCam(ui) {
       }
     }
     // 손목 방식: 지금 목표 자세를 작은 로봇팔 옆모습으로 (고른 손 반대쪽 위 구석)
+    // 팔꿈치 방식: 재고 있는 위팔(어깨→팔꿈치)과 수평선
+    if (mode === 'active' && calib && scheme === 'elbow' && m && m.elbowOk) {
+      const [sx, sy] = px(m.sideShoulder), [ex, ey] = px(m.elbow);
+      const out = ex >= sx ? 1 : -1;
+      g.setLineDash([8, 8]); g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(sx, sy); g.lineTo(sx + out * w * 0.25, sy); g.stroke(); g.setLineDash([]);
+      g.strokeStyle = '#3ddc84'; g.lineWidth = 7; g.lineCap = 'round';
+      g.beginPath(); g.moveTo(sx, sy); g.lineTo(ex, ey); g.stroke(); g.lineCap = 'butt';
+      g.fillStyle = '#3ddc84'; g.beginPath(); g.arc(ex, ey, 8, 0, Math.PI * 2); g.fill();
+    }
     if (mode === 'active' && calib && lastT && scheme !== 'pos') {
       const k = h / 480;
       const right = side !== 'left';
@@ -392,11 +390,6 @@ export function createHandCam(ui) {
       g.beginPath(); g.arc(tx, ty, 6 * k, 0, Math.PI * 2); g.fill();
       g.fillStyle = '#9aa4b2'; g.fillRect(bx - 9 * k, by, 18 * k, 18 * k);   // 받침대
       g.fillStyle = '#fff'; g.beginPath(); g.arc(bx, by, 5 * k, 0, Math.PI * 2); g.fill();
-    }
-    // 다른 손 뼈대 (양손 방식)
-    if (m && m.raw2 && scheme === 'two') {
-      g.strokeStyle = '#3ddc84'; g.lineWidth = 3;
-      for (const [a, b] of HAND_LINKS) { g.beginPath(); g.moveTo(m.raw2[a].x * w, m.raw2[a].y * h); g.lineTo(m.raw2[b].x * w, m.raw2[b].y * h); g.stroke(); }
     }
     // 손 뼈대
     if (m && m.raw) {
@@ -433,12 +426,11 @@ export function createHandCam(ui) {
     ui.overlay.className = 'cal';
     ui.overlay.innerHTML = `
       <div class="cal-guide">
-        ${poseFigure(side, scheme === 'two')}
+        ${poseFigure(side)}
         <div class="cal-text">
           <b>${sideName(side)} 보정</b>
           <span>${sideName(side)} <b>손바닥을 카메라 쪽</b>으로, <b>손가락은 위로 활짝</b> (하이파이브 하듯).<br>
-          팔꿈치를 살짝 굽혀 손을 <b>${side === 'left' ? '왼쪽' : '오른쪽'} 어깨 앞 동그라미</b> 안에 두세요.${scheme === 'two'
-    ? `<br><b>${sideName(side === 'left' ? 'right' : 'left')}도 똑같이</b> 반대쪽 어깨 앞(점선 동그라미)에 드세요.` : ''}</span>
+          ${scheme === 'elbow' ? '<b>팔꿈치는 몸 옆에 내리고</b> 굽혀서' : '팔꿈치를 살짝 굽혀'} 손을 <b>${side === 'left' ? '왼쪽' : '오른쪽'} 어깨 앞 동그라미</b> 안에 두세요.</span>
         </div>
       </div>
       <ul class="cal-check">${cal.checks.map((c) => `<li class="${c.ok ? 'ok' : ''}">${c.ok ? '✓' : '○'} ${c.ok ? c.good : c.bad.replace(/ 주세요$/, '')}</li>`).join('')}</ul>
@@ -457,11 +449,11 @@ export function createHandCam(ui) {
       sm.fore += (m.fore - sm.fore) * (sm.init ? 0.3 : 1);
       sm.init = true;
     }
-    if (m.ok2) {   // 다른 손: 안 보이면 마지막 값을 그대로 (= 로봇 어깨 그 자리)
-      const b = seen2 ? 0.3 : 1;
-      if (m.pitch2 != null) sm.pitch2 += (m.pitch2 - sm.pitch2) * b;
-      sm.fore2 += (m.fore2 - sm.fore2) * b;
-      seen2 = now;
+    if (m.elbowOk) {   // 팔꿈치: 안 보이면 마지막 값 그대로 (로봇 위팔 그 자리)
+      const b = elbowSeen ? 0.35 : 1;
+      sm.elev += (m.elev - sm.elev) * b;
+      sm.ex += (m.elbow.x - sm.ex) * b;
+      elbowSeen = now;
     }
     if (mode === 'calibrate') {
       const cal = calibChecks(m, side || 'right', scheme);
@@ -483,7 +475,7 @@ export function createHandCam(ui) {
         if (held >= CAL.holdSec) {
           phase = 'capture';
           calibSamples.push({ dx: m.dx, dy: m.dy, palm: m.palm, open: m.open, hx: m.hand.x, hy: m.hand.y, aspect: m.aspect, pitch: m.pitch, fore: m.fore,
-            pitch2: m.ok2 ? m.pitch2 : null, fore2: m.ok2 ? m.fore2 : null });
+            elev: m.elbowOk ? m.elev : null, rel: m.elbowOk ? m.hand.x - m.elbow.x : null, fl: m.elbowOk ? m.forearmLen : null });
           if (held >= CAL.holdSec + CAL.captureSec) finishCalibration();
         } else phase = 'hold';
         cal.progress = Math.min(1, held / (CAL.holdSec + CAL.captureSec));
@@ -500,18 +492,18 @@ export function createHandCam(ui) {
     }
     const t = toTarget({ ...m, dx: sm.dx, dy: sm.dy, hand: { x: sm.hx, y: sm.hy }, palm: sm.palm, open: sm.open, pinch: m.ok ? m.pinch : 1,
       pitch: m.pitch != null || calib.pitch0 != null ? sm.pitch : null, fore: sm.fore,
-      pitch2: calib.pitch20 != null ? sm.pitch2 : null, fore2: sm.fore2 }, calib, sens, grip, scheme);
+      elev: elbowSeen ? sm.elev : null, relX: elbowSeen ? sm.hx - sm.ex : null }, calib, sens, grip, scheme);
     grip = t.grip;
     lastT = t;
     ui.onTarget(t);
     ui.status.textContent = '인식 중';
     ui.status.className = 'ok';
     const deg = Math.round(t.yawRight * 57.3);
-    const atEdge = Math.abs(t.u) >= 0.999 || (scheme !== 'two' && Math.abs(t.v) >= 0.999);
-    const lost2 = scheme === 'two' && now - seen2 > 400;
+    const atEdge = scheme !== 'elbow' && (Math.abs(t.u) >= 0.999 || Math.abs(t.v) >= 0.999);
+    const lostElbow = scheme === 'elbow' && now - elbowSeen > 500;
     const yawTxt = `회전 ${deg > 0 ? '오른쪽 ' : deg < 0 ? '왼쪽 ' : ''}${Math.abs(deg)}°`;
     const gripTxt = `집게 ${grip ? '닫힘 ✊' : '열림 🖐'}`;
-    ui.info.textContent = lost2 ? `${sideName(side === 'left' ? 'right' : 'left')}이 안 보여요 · 위팔(어깨)은 그 자리에 멈춤`
+    ui.info.textContent = lostElbow ? '팔꿈치가 안 보여요 · 위팔은 그 자리에 멈춤'
       : atEdge ? '점선 상자 끝에 닿았어요 — 더 가지 않아도 끝까지 돌아요'
       : scheme !== 'pos'
         ? `${yawTxt} · 위팔 ${Math.round(t.shoulder / DEG)}° · 아래팔 ${Math.round(t.fore / DEG)}° · ${gripTxt}`
@@ -531,13 +523,12 @@ export function createHandCam(ui) {
       // 손 기울기 기준 (손가락이 위를 향한 보정 자세)
       pitch0: calibSamples.every((s) => s.pitch != null) ? median(calibSamples.map((s) => s.pitch)) : null,
       fore0: median(calibSamples.map((s) => s.fore)),
-      // 다른 손 기울기 기준 (양손 방식)
-      pitch20: calibSamples.every((s) => s.pitch2 != null) ? median(calibSamples.map((s) => s.pitch2)) : null,
-      fore20: calibSamples.every((s) => s.fore2 != null) ? median(calibSamples.map((s) => s.fore2)) : null,
+      // 팔꿈치 방식 기준: 위팔 각도, 팔꿈치 기준 손 위치, 아래팔 길이
+      elev0: calibSamples.every((s) => s.elev != null) ? median(calibSamples.map((s) => s.elev)) : null,
+      rel0: calibSamples.every((s) => s.rel != null) ? median(calibSamples.map((s) => s.rel)) : null,
+      fl0: calibSamples.every((s) => s.fl != null) ? Math.max(0.05, median(calibSamples.map((s) => s.fl))) : null,
     };
-    if (calib.pitch20 != null) sm.pitch2 = calib.pitch20;
-    if (calib.fore20 != null) sm.fore2 = calib.fore20;
-    seen2 = calib.fore20 != null ? performance.now() : 0;
+    if (calib.elev0 != null) { sm.elev = calib.elev0; sm.ex = calib.hand0.x - calib.rel0; elbowSeen = performance.now(); }
     if (calib.pitch0 != null) sm.pitch = calib.pitch0;
     sm.fore = calib.fore0;
     sm.dx = calib.dx; sm.dy = calib.dy; sm.palm = calib.palm; sm.open = calib.open;
@@ -546,9 +537,8 @@ export function createHandCam(ui) {
     mode = 'active';
     lastCheckKey = '';
     ui.overlay.className = '';
-    const o2 = sideName(side === 'left' ? 'right' : 'left'), o1 = sideName(side || 'right');
-    ui.overlay.innerHTML = scheme === 'two'
-      ? `<b>보정 완료!</b><br>${o2} 손목을 숙이면 위팔이 내려가고,<br>${o1} 손목을 숙이면 아래팔이 내려가요`
+    ui.overlay.innerHTML = scheme === 'elbow'
+      ? '<b>보정 완료!</b><br>팔꿈치를 옆으로 들면 로봇 위팔이 눕고,<br>손목을 숙이면 아래팔이 내려가요'
       : scheme === 'wrist'
       ? '<b>보정 완료!</b><br>손을 내리면 팔이 앞으로 눕고,<br>손목을 숙이면 아래팔이 내려가요'
       : '<b>보정 완료!</b><br>손을 움직여 보세요';
@@ -628,10 +618,10 @@ export function createHandCam(ui) {
     get mode() { return mode; },
     get scheme() { return scheme; },
     setScheme(s) {
-      scheme = s === 'pos' || s === 'wrist' ? s : 'two';
+      scheme = s === 'pos' || s === 'wrist' ? s : 'elbow';
       try { localStorage.setItem(SCHEME_KEY, scheme); } catch { /* 무시 */ }
-      // 양손 방식인데 다른 손 기준이 없으면 다시 보정
-      if (mode === 'active' && calib && scheme === 'two' && calib.fore20 == null) calibrate();
+      // 팔꿈치 방식인데 팔꿈치 기준이 없으면 다시 보정
+      if (mode === 'active' && calib && scheme === 'elbow' && calib.elev0 == null) calibrate();
       else if (mode === 'calibrate') lastCheckKey = '';
     },
     // 시험용: 인식 결과를 직접 넣어 보기
