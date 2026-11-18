@@ -5,6 +5,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { THEMES, applyTheme } from './themes.js';
 import { buildMission, COLORS, polar } from './missions.js';
 import { openDisplayLink } from './net.js';
+import { createHandCam } from './handcam.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = Math.PI / 180;
@@ -804,6 +805,7 @@ function contactFeedback(kind, active, now) {
   const fx = kind && TOUCH_FX[kind];
   if (fx && touch.prev !== kind && now - touch.last > 150) {
     feedback({ vibrate: fx.first, contact: kind, ...(fx.text ? { text: fx.text } : {}) });
+    if (input.cam.active && curArm === arms[0]) pcFlash(kind);   // 카메라 조종 중에는 진동 대신 화면 테두리로
     beep(fx.tone, kind === 'floor' ? 0.12 : 0.06, 'triangle', 0.08);
     touch.last = now;
   } else if (fx && active && now - touch.last > fx.every) {
@@ -832,6 +834,19 @@ const input = {
   keyLock: false,
 };
 const IDLE_INPUT = { yaw: 0, shoulder: 0, elbow: 0, grip: 0, speed: 1 };
+// 웹캠 손 조종: 집게 목표(회전·앞뒤·높이)와 집게 상태. 켜져 있으면 1번 로봇팔(1P)을 조종
+input.cam = { active: false, t: 0, yawRight: 0, reach: 1.85, height: 1.3, grip: 0 };
+
+// 집게 목표 위치 → 로봇 관절 목표 (역기구학: 손목이 그 위치에 오도록 어깨·팔꿈치 각도 계산)
+function camIK(c) {
+  const r = c.reach, dy = c.height - SHOULDER_Y;
+  let d = Math.hypot(r, dy);
+  d = Math.max(Math.abs(L1 - L2) + 0.05, Math.min(L1 + L2 - 0.02, d));
+  const el = -Math.acos(Math.max(-1, Math.min(1, (d * d - L1 * L1 - L2 * L2) / (2 * L1 * L2))));
+  const sh = Math.atan2(dy, r) - Math.atan2(L2 * Math.sin(el), L1 + L2 * Math.cos(el));
+  const lim = (v, j) => Math.max(LIMITS[j][0], Math.min(LIMITS[j][1], v));
+  return { yaw: lim(-c.yawRight, 'yaw'), shoulder: lim(sh, 'shoulder'), elbow: lim(el, 'elbow') };
+}
 const NO_KEYS = new Set();
 const conn = { phone: false };
 let phoneIds = [];                 // 연결된 폰 번호들
@@ -1683,10 +1698,21 @@ function frame(now) {
 // 로봇팔 한 대의 한 프레임: 입력 → 관절 이동(충돌 검사) → 집게 → 접촉 진동 → 녹화
 function armStep(a, dt, now) {
   // 입력 합치기 (폰 신호가 0.5초 이상 끊기면 정지)
-  const src = a.phoneId != null ? input.phones[a.phoneId] : null;
-  const L = src && now - src.t < 500 ? src : IDLE_INPUT;
-  const k = a.keyboard ? input.keys : NO_KEYS;
-  const keyLock = a.keyboard && input.keyLock;
+  const camOn = a === arms[0] && input.cam.active;
+  let L;
+  if (camOn) {
+    // 카메라: 목표 관절 각도와 지금 각도의 차이만큼 움직임 (기존 충돌·집기 처리는 그대로)
+    if (now - input.cam.t < 400) {
+      const t = camIK(input.cam), j = a.joint;
+      const c = (v) => Math.max(-1, Math.min(1, v * 4));
+      L = { yaw: -c(t.yaw - j.yaw), shoulder: -c(t.shoulder - j.shoulder), elbow: -c(t.elbow - j.elbow), grip: input.cam.grip, speed: 1.3 };
+    } else L = { ...IDLE_INPUT, grip: input.cam.grip };   // 손이 안 보이면 멈춤 (집게는 그대로)
+  } else {
+    const src = a.phoneId != null ? input.phones[a.phoneId] : null;
+    L = src && now - src.t < 500 ? src : IDLE_INPUT;
+  }
+  const k = a.keyboard && !camOn ? input.keys : NO_KEYS;
+  const keyLock = a.keyboard && !camOn && input.keyLock;
   const key = (a, b) => (k.has(a) ? 1 : 0) - (k.has(b) ? 1 : 0);
   const target = {
     yaw: -(L.yaw + key('KeyD', 'KeyA')) * L.speed,           // 오른쪽 기울임 → 오른쪽 회전
@@ -1742,6 +1768,7 @@ function armStep(a, dt, now) {
       if (gripWait.t > 0.45 && !gripWait.failed) {
         gripWait.failed = true;
         feedback({ gripFail: true, vibrate: [40, 60, 40], text: '잡을 물건이 없어요 · 집게를 물건 위에 맞춰 주세요' });
+        if (camOn) showBanner('잡을 물건이 없어요', '손을 펴고, 집게를 물건 위에 맞춘 뒤 다시 쥐세요', 'warn', 1600);
       }
     } else if (phoneGrip <= 0.5) {
       gripWait.t = 0;
@@ -1935,6 +1962,47 @@ function startFromIntro() {
 $('btnStart').onclick = () => { if (state.mode === 'battle') enterMission(); startFromIntro(); document.activeElement.blur(); };
 $('btnBattle').onclick = () => { beep(660, 0.1); enterBattle(); document.activeElement.blur(); };
 $('btnMode').onclick = () => { toggleMode(); document.activeElement.blur(); };
+
+// ---------------- 웹캠 손 조종 ----------------
+function pcFlash(kind) {
+  const f = $('pcFlash');
+  f.className = '';
+  void f.offsetWidth;
+  f.className = kind;
+}
+const handCam = createHandCam({
+  panel: $('camPanel'), video: $('camVideo'), canvas: $('camCanvas'),
+  status: $('camStatus'), info: $('camInfo'), overlay: $('camOverlay'),
+  onLoadStep: (t) => { $('camInfo').textContent = t; },
+  onTarget: (t) => {
+    if (!t) { input.cam.t = 0; return; }
+    Object.assign(input.cam, t, { t: performance.now() });
+  },
+  onSide: (s) => { $('camSide').textContent = s === 'left' ? '왼손' : '오른손'; },
+  onCalibrated: () => { beep(880, 0.12); if (state.phase === 'intro') startFromIntro(); },
+});
+async function toggleHandCam() {
+  if (input.cam.active) {
+    handCam.close();
+    input.cam.active = false;
+    document.body.classList.remove('cam');
+    $('btnHand').classList.remove('on');
+    return;
+  }
+  input.cam.active = true;
+  input.cam.t = 0;
+  document.body.classList.add('cam');
+  $('btnHand').classList.add('on');
+  $('camSide').textContent = handCam.side === 'left' ? '왼손' : '오른손';
+  $('camSens').value = Math.round(handCam.sens * 100);
+  $('connect').classList.add('hidden');
+  try { await handCam.open(); }
+  catch { input.cam.active = false; $('btnHand').classList.remove('on'); }
+}
+$('btnHand').onclick = () => { toggleHandCam(); document.activeElement.blur(); };
+$('camClose').onclick = () => { toggleHandCam(); document.activeElement.blur(); };
+$('camCalib').onclick = () => { handCam.recalibrate(); document.activeElement.blur(); };
+$('camSens').oninput = () => handCam.setSens($('camSens').value / 100);
 $('btnConnect').onclick = () => { $('connect').classList.toggle('hidden'); document.activeElement.blur(); };
 
 setTheme(0);
@@ -1947,7 +2015,7 @@ requestAnimationFrame(frame);
 // 디버그용 (브라우저 콘솔에서 상태 확인)
 window.__sim = {
   state, input, tick, camera, rec, arms, players, battle, useArm, saveArm, enterBattle, enterMission, fingerDir, fingerContactDist, worldYaw,
-  poseInvalid, resolveContacts, floorDepth, armSpheres, applyJoints,
+  poseInvalid, resolveContacts, floorDepth, armSpheres, applyJoints, handCam, camIK,
   get joint() { return arms[0].joint; }, get tipPoint() { return arms[0].tipPoint; }, get grabPoint() { return arms[0].grabPoint; },
   get fingers() { return arms[0].fingers; }, get wrG() { return arms[0].wrG; },
 };

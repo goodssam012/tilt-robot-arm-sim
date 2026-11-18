@@ -91,6 +91,40 @@
   #banner.fail .big { color: var(--bad); }
   #banner.warn .big { color: var(--warn); }
   .hidden { display: none !important; }
+  /* ---- 웹캠 손 조종 ---- */
+  #camPanel { right: 16px; bottom: 16px; width: min(320px, calc(100vw - 32px)); display: grid; gap: 8px; padding: 10px; }
+  #camPanel[hidden] { display: none; }
+  body.cam #help { display: none; }
+  .cam-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .cam-head #camStatus { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: rgba(255,255,255,.1); color: var(--muted); }
+  .cam-head #camStatus.ok { background: var(--ok); color: #001; }
+  .cam-head #camStatus.warn { background: var(--warn); color: #001; }
+  .cam-head .btn { margin-left: auto; padding: 4px 10px; font-size: 12px; }
+  .cam-view { position: relative; border-radius: 10px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; }
+  .cam-view video, .cam-view canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  #camOverlay { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 8px;
+    font-size: 14px; line-height: 1.5; color: #fff; text-shadow: 0 2px 8px #000; pointer-events: none; }
+  #camOverlay:empty { display: none; }
+  #camOverlay b { font-size: 22px; }
+  #camOverlay .cam-pick { display: flex; gap: 10px; justify-content: center; pointer-events: auto; }
+  #camOverlay .cam-pick button { font: inherit; font-size: 16px; font-weight: 700; padding: 10px 18px; border-radius: 10px; border: 0; cursor: pointer; background: rgba(255,255,255,.85); color: #111; }
+  #camOverlay .cam-pick button.on { background: var(--accent); color: #001; }
+  #camOverlay { background: rgba(0,0,0,.35); }
+  .cam-ctrl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .cam-ctrl .btn { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
+  .cam-ctrl label { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .cam-ctrl input { width: 90px; }
+  #camInfo { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.2em; }
+  #camHelp { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  #btnHand.on { background: var(--ok); color: #001; border-color: transparent; }
+  /* 카메라 조종 중 충돌을 화면 테두리로 알림 (진동 대신) */
+  #pcFlash { position: fixed; inset: 0; pointer-events: none; z-index: 30; border: 10px solid transparent; }
+  #pcFlash.touch { animation: pcfTouch .3s ease-out; }
+  #pcFlash.hit { animation: pcfHit .4s ease-out; }
+  #pcFlash.floor { animation: pcfFloor .45s ease-out; }
+  @keyframes pcfTouch { from { border-color: #ffb547; } to { border-color: transparent; } }
+  @keyframes pcfHit { from { border-color: #ff5d6c; } to { border-color: transparent; } }
+  @keyframes pcfFloor { from { border-color: #ff8a3d; } to { border-color: transparent; } }
   body.battle #recPanel { display: none !important; }
   #tasks li .pts { margin-left: auto; font-size: 18px; font-variant-numeric: tabular-nums; color: var(--text); }
   #scoreBattle { font-variant-numeric: tabular-nums; }
@@ -120,6 +154,7 @@
 
 <div id="status" class="panel">
   <span class="pill"><i class="dot" id="dPhone"></i>스마트폰 조종기<b id="phoneCount"></b></span>
+  <button id="btnHand" title="웹캠으로 손을 인식해 조종">🖐 카메라</button>
   <button id="btnMode" title="단축키 B">⚔ 배틀 모드</button>
   <span class="pill" id="theme">배경: -</span>
   <button id="btnConnect">📱 연결 QR</button>
@@ -132,6 +167,19 @@
   <div>집게 닫힘 <b id="jGrip">0%</b></div>
   <div>시점 <b id="jCam">기본</b></div>
 </div>
+
+<div id="camPanel" class="panel" hidden>
+  <div class="cam-head"><b>🖐 카메라 조종</b><span id="camStatus">준비 중</span><button class="btn" id="camClose">끄기</button></div>
+  <div class="cam-view"><video id="camVideo" playsinline muted></video><canvas id="camCanvas"></canvas><div id="camOverlay"></div></div>
+  <div id="camInfo"></div>
+  <div class="cam-ctrl">
+    <span id="camSide">오른손</span>
+    <button class="btn" id="camCalib">⊙ 다시 보정</button>
+    <label>감도 <input type="range" id="camSens" min="50" max="200" step="5" value="100"></label>
+  </div>
+  <div id="camHelp">손을 <b>좌우</b>로 → 회전 · <b>들고 내리기</b> → 높이 · 화면 쪽으로 <b>밀고 당기기</b> → 앞뒤 · <b>주먹</b>(또는 엄지·검지 집기) → 집기, <b>펴기</b> → 놓기</div>
+</div>
+<div id="pcFlash"></div>
 
 <div id="recPanel" class="panel" data-mode="idle">
   <div class="rec-top"><i class="rec-dot"></i><span id="recText">기록 없음</span></div>
