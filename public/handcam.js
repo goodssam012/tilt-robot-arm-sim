@@ -33,7 +33,9 @@ export const CAL = {
   targetDown: 0.15, targetR: 0.45,         // 목표 동그라미: 어깨보다 어깨너비×0.15 아래, 반지름 어깨너비×0.45
   holdSec: 1.0, captureSec: 1.0,           // 모두 맞은 채 1초 유지 → 1초 동안 기록
   centerTol: 0.17,
-  elbowDownMax: -50 * Math.PI / 180,      // 팔꿈치 방식: 보정 때 위팔이 이보다 아래로 (몸 옆에 내림)                         // 몸 중심이 화면 가운데에서 이만큼(가로의 비율) 안이면 OK
+  elbowDownMax: -50 * Math.PI / 180,      // 팔꿈치 방식: 보정 때 위팔이 이보다 아래로 (몸 옆에 내림)
+  raiseMin: 30 * Math.PI / 180,           // 2단계(수평 보정): 처음 자세보다 이만큼 이상 들어야 함
+  steadyTol: 5 * Math.PI / 180,           // 2단계: 0.5초 동안 이 안에서 흔들림 없으면 멈춘 것으로                         // 몸 중심이 화면 가운데에서 이만큼(가로의 비율) 안이면 OK
 };
 
 // ---------------- 계산 (화면·카메라와 상관없는 부분, 시험하기 쉽게 분리) ----------------
@@ -61,7 +63,11 @@ export function measure({ hands, worlds = null, pose, side, aspect = 4 / 3, inve
     const el = iso(pose[ei]);
     out.elbow = el;
     out.elbowOk = out.poseOk && vis(ei);
-    out.elev = Math.atan2(-(el.y - out.sideShoulder.y), Math.abs(el.x - out.sideShoulder.x));
+    // 어깨선 기울기(몸이 기울거나 카메라가 비뚤어도)만큼 빼서 '내 몸 기준 수평'에서 잰 각도로
+    const ss = out.sideShoulder, c = out.center;
+    out.shoulderTilt = Math.atan2(-(ss.y - c.y), Math.abs(ss.x - c.x));   // 고른 쪽 어깨가 높으면 +
+    out.elev = Math.atan2(-(el.y - ss.y), Math.abs(el.x - ss.x)) - out.shoulderTilt;
+    out.upperLen = dist(el, ss);
     out.forearmLen = dist(el, sideWrist);
   }
   if (!hands || !hands.length) return { ...out, reason: 'nohand' };
@@ -195,7 +201,8 @@ export function toTarget(m, calib, sens = 1, prevGrip = 0, scheme = 'wrist') {
   if (scheme === 'elbow' && m.elev != null && calib.elev0 != null) {
     // 위팔 각도: 보정 자세 → 로봇 85°, 수평(0°) → 로봇 5°. 사이는 비례
     const d = (m.elev - calib.elev0) * sens;
-    const span = Math.max(30 * DEG, -calib.elev0);
+    // 보정한 '수평' 자세(위팔을 옆으로 든 각도)까지를 로봇 위팔 85° → 5° 로
+    const span = Math.max(20 * DEG, (calib.elevH != null ? calib.elevH : 0) - calib.elev0);
     const deg = d >= 0 ? MAP.shMid - (d / span) * (MAP.shMid - MAP.shDown) : MAP.shMid - d / DEG * MAP.elevUpGain;
     const c = Math.max(MAP.shDown, Math.min(MAP.shUp, deg));
     shoulder = c * DEG;
@@ -225,6 +232,20 @@ function poseFigure(side) {
   </svg>`;
 }
 
+// 2단계 그림: 팔꿈치를 옆으로 들어 위팔이 수평
+function raiseFigure(side) {
+  const flip = side === 'left' ? ' style="transform:scaleX(-1)"' : '';
+  return `<svg class="cal-fig" viewBox="0 0 120 130"${flip} aria-hidden="true">
+    <circle cx="52" cy="26" r="13" fill="none" stroke="#fff" stroke-width="3.5"/>
+    <path d="M52 39 V92 M30 54 H74 M30 54 L24 92 M52 92 L40 124 M52 92 L64 124" stroke="#fff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+    <path d="M74 54 H112" stroke="#ffc531" stroke-width="3" stroke-dasharray="5 4"/>
+    <path d="M74 54 L104 54 L104 28" stroke="#38d6ff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="97" y="12" width="14" height="15" rx="5" fill="#38d6ff"/>
+    <path d="M80 80 Q96 74 100 60" stroke="#3ddc84" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <path d="M95 60 L101 57 L103 64" stroke="#3ddc84" stroke-width="3" fill="none" stroke-linecap="round"/>
+  </svg>`;
+}
+
 // ---------------- 카메라 + 인식 + 화면 ----------------
 export function createHandCam(ui) {
   // ui: { panel, video, canvas, status, info, overlay, onTarget(t|null), onLoadStep(text), onSide(s), onCalibrated() }
@@ -236,6 +257,7 @@ export function createHandCam(ui) {
   let palmInvert = false, palmBadSince = 0;
   let lastT = null;   // 마지막 조종 값 (화면 게이지용)
   let scheme = 'elbow';
+  let raiseHist = [];   // 2단계: 최근 위팔 각도 (멈춤 판단)
   let elbowSeen = 0;
   const sm = { dx: 0, dy: 0, hx: 0, hy: 0, palm: 0, open: 0, pitch: 0, fore: 1, elev: 0, ex: 0, init: false };   // 부드럽게 만든 값
   try {
@@ -277,7 +299,7 @@ export function createHandCam(ui) {
     const A = m ? m.aspect : w / h;
     const px = (p) => [p.x / A * w, p.y * h];         // iso 좌표 → 픽셀
     g.clearRect(0, 0, w, h);
-    const calibrating = mode === 'calibrate' || mode === 'choose';
+    const calibrating = mode === 'calibrate' || mode === 'calibrate2' || mode === 'choose';
 
     // 보정 중: 몸이 안 보이면 '여기에 앉으세요' 사람 모양 점선
     if (calibrating && !(m && m.poseOk)) {
@@ -296,6 +318,29 @@ export function createHandCam(ui) {
         g.setLineDash([6, 6]); g.strokeStyle = 'rgba(255,197,49,.8)';
         g.beginPath(); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke(); g.setLineDash([]);
       }
+    }
+    // 2단계: 어깨에서 수평 점선(목표) + 지금 위팔 + 진행 고리
+    if (mode === 'calibrate2' && m && m.sideShoulder) {
+      const [sx, sy] = px(m.sideShoulder);
+      const L = Math.max(60, (m.upperLen || 0.2) / A * w);
+      const outDir = m.elbow && m.elbow.x < m.sideShoulder.x ? -1 : (m.elbow ? 1 : (side === 'right' ? -1 : 1));
+      // 어깨선 기울기만큼 기울인 '몸 기준 수평'
+      const tl = m.shoulderTilt || 0;
+      const hx = sx + outDir * Math.cos(tl) * L, hy = sy - Math.sin(tl) * L;
+      g.setLineDash([10, 8]); g.strokeStyle = '#ffc531'; g.lineWidth = 4;
+      g.beginPath(); g.moveTo(sx, sy); g.lineTo(hx, hy); g.stroke(); g.setLineDash([]);
+      g.strokeStyle = '#ffc531'; g.lineWidth = 4; g.beginPath(); g.arc(hx, hy, 18, 0, Math.PI * 2); g.stroke();
+      if (m.elbowOk) {
+        const [ex, ey] = px(m.elbow);
+        g.strokeStyle = cal && cal.allOk ? '#3ddc84' : '#ff9d47'; g.lineWidth = 8; g.lineCap = 'round';
+        g.beginPath(); g.moveTo(sx, sy); g.lineTo(ex, ey); g.stroke(); g.lineCap = 'butt';
+        g.fillStyle = '#fff'; g.beginPath(); g.arc(ex, ey, 8, 0, Math.PI * 2); g.fill();
+        if (cal && cal.progress > 0) {
+          g.strokeStyle = '#3ddc84'; g.lineWidth = 8;
+          g.beginPath(); g.arc(ex, ey, 26, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cal.progress); g.stroke();
+        }
+      }
+      g.fillStyle = '#3ddc84'; g.beginPath(); g.arc(sx, sy, 9, 0, Math.PI * 2); g.fill();
     }
     // 보정 중: 어깨 표시 + 고른 손 어깨에서 목표 동그라미까지 + 진행 고리
     if (mode === 'calibrate' && cal && cal.target && m.shoulders) {
@@ -483,6 +528,7 @@ export function createHandCam(ui) {
       if (mode === 'calibrate') renderCalibUI(cal, phase);
       return cal;
     }
+    if (mode === 'calibrate2') return stepRaise(m, now);
     if (mode !== 'active') return null;
     if (!m.ok && now - lastSeen > 300) {
       ui.status.textContent = m.reason === 'otherhand' ? '고른 손이 아닌 손이 보여요' : '손이 안 보여요 · 로봇 정지';
@@ -533,6 +579,75 @@ export function createHandCam(ui) {
     sm.fore = calib.fore0;
     sm.dx = calib.dx; sm.dy = calib.dy; sm.palm = calib.palm; sm.open = calib.open;
     sm.hx = calib.hand0.x; sm.hy = calib.hand0.y;
+    if (scheme === 'elbow' && calib.elev0 != null) { startRaise(); return; }   // 2단계: 수평 보정
+    goActive();
+  }
+
+  // ---- 2단계 (팔꿈치 방식): 팔꿈치를 옆으로 어깨 높이(수평)까지 들어 '수평' 기준 잡기 ----
+  function startRaise() {
+    mode = 'calibrate2';
+    raiseHist = []; okSince = 0; calibSamples = []; lastCheckKey = '';
+    ui.status.textContent = '보정 2/2';
+  }
+  function raiseChecks(m, now) {
+    if (m.elbowOk) raiseHist.push({ t: now, e: m.elev });
+    raiseHist = raiseHist.filter((r) => now - r.t < 500);
+    const es = raiseHist.map((r) => r.e);
+    const steady = es.length >= 3 && Math.max(...es) - Math.min(...es) < CAL.steadyTol;
+    const lifted = m.elbowOk && m.elev - calib.elev0 >= CAL.raiseMin;
+    const checks = [
+      { k: 'elbow', ok: !!m.elbowOk, good: '팔꿈치가 보여요', bad: '팔꿈치가 화면에 나오게 해 주세요' },
+      { k: 'lift', ok: lifted, good: '위팔을 옆으로 들었어요', bad: '팔꿈치를 옆으로 어깨 높이까지 들어 주세요' },
+      { k: 'steady', ok: lifted && steady, good: '멈췄어요', bad: '편한 높이에서 그대로 멈춰 주세요' },
+    ];
+    return { checks, allOk: checks.every((c) => c.ok), firstBad: checks.find((c) => !c.ok) };
+  }
+  function stepRaise(m, now) {
+    const cal = raiseChecks(m, now);
+    let phase = 'wait';
+    if (!cal.allOk) { okSince = 0; calibSamples = []; }
+    else {
+      if (!okSince) okSince = now;
+      const held = (now - okSince) / 1000;
+      if (held >= CAL.holdSec) {
+        phase = 'capture';
+        calibSamples.push(m.elev);
+        if (held >= CAL.holdSec + CAL.captureSec && calibSamples.length >= 5) {
+          calib.elevH = median(calibSamples);
+          goActive();
+          return cal;
+        }
+      } else phase = 'hold';
+      cal.progress = Math.min(1, held / (CAL.holdSec + CAL.captureSec));
+    }
+    renderRaiseUI(cal, phase, m);
+    return cal;
+  }
+  function renderRaiseUI(cal, phase, m) {
+    const ang = m.elbowOk ? Math.round(m.elev / DEG) : null;
+    const key = cal.checks.map((c) => (c.ok ? 1 : 0)).join('') + phase + (ang == null ? '' : Math.round(ang / 5));
+    if (key === lastCheckKey) return;
+    lastCheckKey = key;
+    const msg = phase === 'capture' ? '좋아요! 그대로 멈추세요…' : phase === 'hold' ? '좋아요! 잠깐만 그대로…' : cal.firstBad ? cal.firstBad.bad : '';
+    ui.overlay.className = 'cal';
+    ui.overlay.innerHTML = `
+      <div class="cal-guide">
+        ${raiseFigure(side)}
+        <div class="cal-text">
+          <b>보정 2/2 · 어깨 수평</b>
+          <span>손은 그대로 펴고, <b>팔꿈치를 옆으로 들어</b> 위팔을 <b>노란 점선(어깨 높이 수평)</b>에 맞춰 주세요.<br>
+          편하게 들 수 있는 만큼만 들면 돼요. 이 높이가 로봇 위팔이 <b>수평으로 눕는 자세</b>가 됩니다.<br>
+          지금 위팔: <b>${ang == null ? '—' : ang + '°'}</b> (수평 0°, 처음 ${Math.round(calib.elev0 / DEG)}°)</span>
+          <div class="cam-pick"><button data-skip="1">건너뛰기 (수평 = 0°)</button></div>
+        </div>
+      </div>
+      <ul class="cal-check">${cal.checks.map((c) => `<li class="${c.ok ? 'ok' : ''}">${c.ok ? '✓' : '○'} ${c.ok ? c.good : c.bad.replace(/ 주세요$/, '')}</li>`).join('')}</ul>
+      <div class="cal-msg ${phase !== 'wait' ? 'good' : ''}">${msg}</div>`;
+    const b = ui.overlay.querySelector('[data-skip]');
+    if (b) b.onclick = () => { calib.elevH = null; goActive(); };
+  }
+
+  function goActive() {
     grip = 0;
     mode = 'active';
     lastCheckKey = '';
