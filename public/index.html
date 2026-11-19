@@ -132,6 +132,8 @@
   #camOverlay.cal .cal-guide { position: absolute; left: 10px; top: 10px; display: flex; gap: 10px; align-items: center; max-width: 58%;
     background: rgba(8, 12, 20, .72); border-radius: 12px; padding: 8px 12px 8px 6px; text-align: left; }
   #camOverlay.cal .cal-fig { width: 64px; height: 70px; flex: none; }
+  #camOverlay.cal .cal-emo { font-size: 44px; line-height: 1; flex: none; }
+  #camPanel.big #camOverlay.cal .cal-emo { font-size: 72px; }
   #camOverlay.cal .cal-text { display: grid; gap: 4px; font-size: 12px; line-height: 1.5; }
   #camOverlay.cal .cal-text > b { font-size: 15px; }
   #camOverlay.cal .cal-text span b { font-size: inherit; color: #9fe8ff; }
@@ -208,7 +210,7 @@
   <div class="cam-ctrl">
     <span id="camSide">오른손</span>
     <button class="btn" id="camCalib">⊙ 다시 보정</button>
-    <button class="btn" id="camScheme" title="팔꿈치: 위팔 각도 → 로봇 위팔, 손목 → 아래팔 / 손 높이: 손 높이 → 위팔, 손목 → 아래팔 / 위치: 손 높이·앞뒤 → 집게 위치">방식: 팔꿈치</button>
+    <button class="btn" id="camScheme" title="밀기: 손바닥 밀기/당기기 → 로봇 위팔, 손목 → 아래팔 / 손 높이: 손 높이 → 위팔, 손목 → 아래팔 / 위치: 손 높이·앞뒤 → 집게 위치">방식: 밀기</button>
     <label>감도 <input type="range" id="camSens" min="50" max="200" step="5" value="100"></label>
   </div>
   <div id="camHelp">손을 <b>좌우</b>로 → 회전 · <b>들고 내리기</b> → 높이 · 화면 쪽으로 <b>밀고 당기기</b> → 앞뒤 · <b>주먹</b>(또는 엄지·검지 집기) → 집기, <b>펴기</b> → 놓기</div>

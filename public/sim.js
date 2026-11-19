@@ -840,7 +840,7 @@ input.cam = { active: false, t: 0, yawRight: 0, reach: 1.85, height: 1.3, grip: 
 // 집게 목표 위치 → 로봇 관절 목표 (역기구학: 손목이 그 위치에 오도록 어깨·팔꿈치 각도 계산)
 function camIK(c) {
   const lim0 = (v, j) => Math.max(LIMITS[j][0], Math.min(LIMITS[j][1], v));
-  if (c.scheme === 'wrist' || c.scheme === 'elbow') {   // 손목·팔꿈치 방식: 위팔 각도와 아래팔 방향이 바로 옴
+  if (c.scheme === 'wrist' || c.scheme === 'push') {   // 손 높이·밀기 방식: 위팔 각도와 아래팔 방향이 바로 옴
     const sh = lim0(c.shoulder, 'shoulder');
     return { yaw: lim0(-c.yawRight, 'yaw'), shoulder: sh, elbow: lim0(c.fore - sh, 'elbow') };
   }
@@ -1984,6 +1984,7 @@ const handCam = createHandCam({
     Object.assign(input.cam, t, { t: performance.now() });
   },
   onSide: (s) => { $('camSide').textContent = s === 'left' ? '왼손' : '오른손'; },
+  onSens: (v) => { $('camSens').value = Math.round(v * 100); },   // 보정 후 동작 테스트로 감도를 맞추면 슬라이더도 기본값으로
   onCalibrated: () => { beep(880, 0.12); if (state.phase === 'intro') startFromIntro(); },
 });
 async function toggleHandCam() {
@@ -2009,16 +2010,16 @@ $('camClose').onclick = () => { toggleHandCam(); document.activeElement.blur(); 
 $('camCalib').onclick = () => { handCam.recalibrate(); document.activeElement.blur(); };
 $('camSens').oninput = () => handCam.setSens($('camSens').value / 100);
 const CAM_HELP = {
-  elbow: '팔꿈치를 기준으로 손 <b>좌우</b> → 회전 · 팔꿈치를 옆으로 <b>들기/내리기</b> → 로봇 위팔 눕히기/세우기 · 손목을 꺾어 <b>손바닥 숙이기/젖히기</b> → 아래팔 내리기/올리기 · <b>주먹</b>(또는 엄지·검지 집기) → 집기, <b>펴기</b> → 놓기',
+  push: '손 <b>좌우</b> → 회전 · 손바닥을 앞으로 <b>밀기/당기기</b> → 로봇 위팔 눕히기/세우기 · 손목을 꺾어 <b>손바닥 숙이기/젖히기</b> → 아래팔 내리기/올리기 · <b>주먹</b>(또는 엄지·검지 집기) → 집기, <b>펴기</b> → 놓기',
   wrist: '손 <b>좌우</b> → 회전 · 팔꿈치를 굽혀 손 <b>올리기/내리기</b> → 로봇 위팔 세우기/눕히기 · 손목을 꺾어 <b>손바닥 숙이기/젖히기</b> → 아래팔 내리기/올리기 · <b>주먹</b>(또는 엄지·검지 집기) → 집기, <b>펴기</b> → 놓기',
   pos: '손 <b>좌우</b> → 회전 · <b>들고 내리기</b> → 집게 높이 · 화면 쪽으로 <b>밀고 당기기</b> → 앞뒤 · <b>주먹</b>(또는 엄지·검지 집기) → 집기, <b>펴기</b> → 놓기',
 };
 function showCamScheme() {
   const s = handCam.scheme;
-  $('camScheme').textContent = { elbow: '방식: 팔꿈치', wrist: '방식: 손 높이', pos: '방식: 위치' }[s];
+  $('camScheme').textContent = { push: '방식: 밀기', wrist: '방식: 손 높이', pos: '방식: 위치' }[s];
   $('camHelp').innerHTML = CAM_HELP[s];
 }
-$('camScheme').onclick = () => { handCam.setScheme({ elbow: 'wrist', wrist: 'pos', pos: 'elbow' }[handCam.scheme]); showCamScheme(); document.activeElement.blur(); };
+$('camScheme').onclick = () => { handCam.setScheme({ push: 'wrist', wrist: 'pos', pos: 'push' }[handCam.scheme]); showCamScheme(); document.activeElement.blur(); };
 showCamScheme();
 $('btnConnect').onclick = () => { $('connect').classList.toggle('hidden'); document.activeElement.blur(); };
 
